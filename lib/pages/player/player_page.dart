@@ -114,6 +114,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   final _encryptedPlayback = EncryptedPlayback();
   Object _lanIdentity = Object();
   bool _handoffOwned = true;
+  bool _castFollower = false;
+  String? _castAudioTarget;
+  DateTime _castSeekedAt = DateTime(2000);
   double? _lanFirstPosition;
   String? _savedProgressKey;
   final _health = PlaybackHealth();
@@ -243,6 +246,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_player is LunaExoPlayer) {
       _player.setDecoderMode(preferences.decoderMode);
     }
+    _castFollower = widget.handoff?.intent.cast == true;
+    if (_castFollower) {
+      unawaited(_player.setVolume(0));
+      LanController.current?.setCastReceiver(
+        LanCastReceiver(apply: _applyCastSync, stop: _stopCastFollower),
+      );
+    }
     _video = widget.videoBuilder == null && _player is! LunaExoPlayer
         ? VideoController(
             _player,
@@ -323,6 +333,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               currentPosition < duration - const Duration(seconds: 2)) {
             _queueRecovery();
           } else if (_autoAdvance &&
+              !_castFollower &&
               _foreground &&
               !_panelOpen &&
               _index + 1 < widget.detail.episodes.length) {
@@ -1156,6 +1167,109 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
+  Map<String, dynamic> _applyCastSync(Map<String, dynamic> body, int recvAtMs) {
+    final episode = body['episode'];
+    final position = body['position'];
+    final playing = body['playing'];
+    final rate = body['rate'];
+    final sentAt = body['sentAt'];
+    final offset = body['offsetMs'];
+    if (episode is! int ||
+        position is! num ||
+        !position.isFinite ||
+        position < 0 ||
+        position > 604800 ||
+        playing is! bool ||
+        rate is! num ||
+        !(rate > 0 && rate <= 8) ||
+        sentAt is! num ||
+        offset is! num) {
+      throw const FormatException('分屏同步数据无效');
+    }
+    if (_closed || widget.store.profileEpoch != _profileEpoch) {
+      throw StateError('接收端播放已关闭');
+    }
+    if (episode != widget.detail.episodes[_index].number) {
+      final next = widget.detail.episodes.indexWhere(
+        (item) => item.number == episode,
+      );
+      if (next < 0) throw StateError('接收端没有第 $episode 集');
+      if (!_loading) {
+        unawaited(
+          _play(next, position: position.toDouble(), playWhenReady: playing),
+        );
+      }
+      return {'state': 'switching'};
+    }
+    if (_loading || _error != null || _openedIndex != _index) {
+      return {'state': 'loading'};
+    }
+    final transit = offset == 0
+        ? 0.05
+        : ((recvAtMs - sentAt.toDouble() - offset.toDouble()) / 1000).clamp(
+            0.0,
+            2.0,
+          );
+    final state = _player.state;
+    final current = state.position.inMilliseconds / 1000;
+    final target = position.toDouble() + (playing ? transit * rate : 0);
+    _playIntent = playing;
+    if (!playing) {
+      if (state.playing) unawaited(_player.pause());
+      if ((current - target).abs() > .3) {
+        unawaited(_player.seek(Duration(milliseconds: (target * 1000).round())));
+      }
+      return {'state': 'paused', 'position': current};
+    }
+    if (!state.playing) unawaited(_player.play());
+    final error = target - current;
+    final now = DateTime.now();
+    var wanted = rate.toDouble();
+    if (error.abs() > .8) {
+      if (now.difference(_castSeekedAt) > const Duration(milliseconds: 2500)) {
+        _castSeekedAt = now;
+        unawaited(
+          _player.seek(Duration(milliseconds: (target * 1000).round())),
+        );
+      }
+    } else if (error.abs() > .06) {
+      wanted = rate * (1 + (error * .4).clamp(-.08, .08));
+    }
+    if ((state.rate - wanted).abs() > .004) {
+      unawaited(_player.setRate(wanted));
+    }
+    return {'state': 'playing', 'position': current, 'error': error};
+  }
+
+  Future<void> _stopCastFollower() async {
+    if (!_castFollower || _closed) return;
+    _castFollower = false;
+    await _player.pause().catchError((Object _) {});
+    await _player.setVolume(100).catchError((Object _) {});
+    if (mounted) {
+      setState(() => _playIntent = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('手机已停止分屏播放')));
+    }
+  }
+
+  void _beginCastAudio(LanController link) {
+    final peer = link.connection?.peer.name ?? '电脑';
+    setState(() => _castAudioTarget = peer);
+    link.startCast(
+      source: () => LanCastState(
+        episode: widget.detail.episodes[_index].number,
+        position: _currentPosition,
+        playing: _player.state.playing && _playIntent,
+        rate: _player.state.rate,
+      ),
+      onEnded: () {
+        if (mounted && !_closed) setState(() => _castAudioTarget = null);
+      },
+    );
+  }
+
   Future<void> _pushToDevice() async {
     final link = LanController.current;
     if (link == null ||
@@ -1191,6 +1305,10 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (!current()) throw StateError('本机播放内容已变更');
           await _stopForLan();
           if (!current()) throw StateError('本机播放内容已变更');
+        },
+        onCastAccepted: () async {
+          if (!current()) throw StateError('本机播放内容已变更');
+          _beginCastAudio(link);
         },
       );
     } catch (error) {
@@ -2293,6 +2411,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     unawaited(_player.pause().catchError((Object _) {}));
     final enhancementClosed = _enhancement.close();
     LanController.current?.detachPlayback(_lanIdentity);
+    final castLink = LanController.current;
+    if (castLink != null) {
+      if (castLink.casting) unawaited(castLink.stopCast());
+      if (_castFollower) castLink.setCastReceiver(null);
+    }
     widget.handoff?.fail('接收端已退出播放');
     widget.store.removeListener(_accessChanged);
     _danmaku.dispose();
@@ -2629,6 +2752,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       onDanmakuSettings: _openDanmakuSettings,
       onRetryDanmaku: _retryDanmakuFromControls,
       onPushToDevice: _pushToDevice,
+      audioOnlyTarget: _castAudioTarget,
       onEnterPictureInPicture: _enterPictureInPicture,
       onRestorePictureInPicture: _restoreFromPictureInPicture,
       onTelevisionEpisodes: _televisionEpisodes,

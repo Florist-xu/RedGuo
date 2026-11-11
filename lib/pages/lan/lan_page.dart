@@ -1040,16 +1040,47 @@ Future<void> showLanPush(
   required LanPlaybackIntent Function() snapshot,
   required bool Function() stillCurrent,
   required Future<void> Function() onAccepted,
+  Future<void> Function()? onCastAccepted,
 }) async {
   final remote = await chooseLanDevice(context, link);
   if (remote == null || !context.mounted || !stillCurrent()) return;
+  var cast = false;
+  if (onCastAccepted != null && remote.peer.kind == 'computer') {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('选择播放方式'),
+        content: const Text(
+          '接力播放：对方接着播放，本机暂停。\n\n'
+          '分屏播放：电脑静音只显示画面，本机继续播放声音，并持续对齐进度。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'push'),
+            child: const Text('接力播放'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, 'cast'),
+            child: const Text('分屏播放'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !context.mounted || !stillCurrent()) return;
+    cast = choice == 'cast';
+  }
   await _lanPanel<void>(
     context,
     _LanPushPanel(
       controller: link,
-      snapshot: snapshot,
+      snapshot: cast ? () => snapshot().asCast() : snapshot,
       stillCurrent: stillCurrent,
-      onAccepted: onAccepted,
+      onAccepted: cast ? onCastAccepted! : onAccepted,
+      cast: cast,
     ),
     maxHeight: 560,
   );
@@ -1062,11 +1093,13 @@ class _LanPushPanel extends StatefulWidget {
     required this.snapshot,
     required this.stillCurrent,
     required this.onAccepted,
+    this.cast = false,
   });
   final LanController controller;
   final LanPlaybackIntent Function() snapshot;
   final bool Function() stillCurrent;
   final Future<void> Function() onAccepted;
+  final bool cast;
   @override
   State<_LanPushPanel> createState() => _LanPushPanelState();
 }
@@ -1127,7 +1160,10 @@ class _LanPushPanelState extends State<_LanPushPanel> {
         children: [
           Padding(
             padding: const EdgeInsets.all(20),
-            child: Text('推送播放', style: Theme.of(context).textTheme.titleLarge),
+            child: Text(
+              widget.cast ? '分屏播放' : '推送播放',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
           ),
           Expanded(
             child: SingleChildScrollView(
@@ -1162,10 +1198,12 @@ class _LanPushPanelState extends State<_LanPushPanel> {
                     ),
                   ),
                   if (!_done)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 16),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 16),
                       child: Text(
-                        '对方实际开播后，本机自动暂停。',
+                        widget.cast
+                            ? '对方开播后，本机继续播放声音并保持同步。'
+                            : '对方实际开播后，本机自动暂停。',
                         textAlign: TextAlign.center,
                       ),
                     ),
