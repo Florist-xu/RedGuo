@@ -68,6 +68,7 @@ jobs:
           python-version: '3.12'
       - name: 注入官方 JS 固定签名配置
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         env:
           HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
         run: python .github/ci/prepare_official_source.py
@@ -153,6 +154,7 @@ jobs:
           python-version: '3.12'
       - name: 注入官方 JS 固定签名配置
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         env:
           HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
         run: python .github/ci/prepare_official_source.py
@@ -186,6 +188,7 @@ jobs:
           python-version: '3.12'
       - name: 注入官方 JS 固定签名配置
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         env:
           HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
         run: python .github/ci/prepare_official_source.py
@@ -302,6 +305,7 @@ jobs:
           python-version: '3.12'
       - name: 注入官方 JS 固定签名配置
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         env:
           HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
         run: python .github/ci/prepare_official_source.py
