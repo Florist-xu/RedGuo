@@ -2539,7 +2539,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final theme = Theme.of(context);
     final title = widget.detail.drama.title;
     final fullscreen = _showFullscreen;
-    final pictureInPicture = _pictureInPictureVisible;
+    final pictureInPicture = _pictureInPictureVisible || _deskMini;
     return PopScope(
       canPop: !_television && (pictureInPicture || !fullscreen),
       onPopInvokedWithResult: (didPop, result) {
