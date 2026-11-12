@@ -156,6 +156,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
   bool _deskMini = false;
+  bool _deskMiniHover = false;
+  double? _deskMiniSeek;
   Rect? _deskMiniRestore;
   bool _pictureInPictureHandlerInstalled = false;
   bool _lastNativePipAutoEnter = false;
@@ -187,9 +189,17 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (!_deskMini) {
         if (_fullscreen) await _rotate();
         _deskMiniRestore = await windowManager.getBounds();
+        if (await windowManager.isMaximized()) await windowManager.unmaximize();
+        final ratio = _aspectRatio >= 1 ? _aspectRatio.clamp(1.0, 2.39) : 16 / 9;
+        await windowManager.setTitleBarStyle(
+          TitleBarStyle.hidden,
+          windowButtonVisibility: false,
+        );
+        await windowManager.setMinimumSize(const Size(160, 90));
         await windowManager.setAlwaysOnTop(true);
-        await windowManager.setSize(const Size(480, 290));
-        await windowManager.setAspectRatio(16 / 9);
+        await windowManager.setAspectRatio(ratio);
+        await windowManager.setSize(Size(480, 480 / ratio));
+        await windowManager.setAlignment(Alignment.bottomRight);
         if (mounted) setState(() => _deskMini = true);
       } else {
         await _restoreDeskMini();
@@ -204,6 +214,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     _deskMiniRestore = null;
     await windowManager.setAspectRatio(0);
     await windowManager.setAlwaysOnTop(false);
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await windowManager.setMinimumSize(
+      Platform.isMacOS ? const Size(960, 540) : const Size(0, 0),
+    );
     if (bounds != null) await windowManager.setBounds(bounds);
     if (mounted && _deskMini) setState(() => _deskMini = false);
   }
@@ -2491,6 +2505,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       unawaited(
         windowManager.setAspectRatio(0).then((_) {
           windowManager.setAlwaysOnTop(false);
+          windowManager.setTitleBarStyle(TitleBarStyle.normal);
           final b = _deskMiniRestore;
           if (b != null) windowManager.setBounds(b);
         }).catchError((Object _) {}),
@@ -2591,7 +2606,9 @@ class _PlayerScreenState extends State<PlayerScreen>
                       ),
                     ],
                   ),
-            body: pictureInPicture
+            body: _deskMini
+                ? _deskMiniView(context)
+                : pictureInPicture
                 ? _videoPane(context)
                 : SafeArea(
                     top: false,
@@ -2740,6 +2757,256 @@ class _PlayerScreenState extends State<PlayerScreen>
       ),
     ),
   );
+
+  Widget _miniIcon(
+    IconData icon,
+    String label,
+    VoidCallback? onPressed, {
+    double size = 36,
+    double iconSize = 22,
+  }) => IconButton(
+    onPressed: onPressed,
+    icon: Icon(icon),
+    iconSize: iconSize,
+    tooltip: label,
+    color: Colors.white,
+    disabledColor: Colors.white38,
+    style: IconButton.styleFrom(
+      fixedSize: Size.square(size),
+      padding: EdgeInsets.zero,
+    ),
+  );
+
+  Widget _miniEdge(
+    ResizeEdge edge,
+    MouseCursor cursor, {
+    double? left,
+    double? top,
+    double? right,
+    double? bottom,
+    double? width,
+    double? height,
+  }) => Positioned(
+    left: left,
+    top: top,
+    right: right,
+    bottom: bottom,
+    width: width,
+    height: height,
+    child: MouseRegion(
+      cursor: cursor,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => unawaited(windowManager.startResizing(edge)),
+      ),
+    ),
+  );
+
+  Widget _deskMiniView(BuildContext context) {
+    final video = _video;
+    final playing = _playIntent;
+    final visible = _deskMiniHover || !playing || _deskMiniSeek != null;
+    const t = 6.0;
+    const c = 12.0;
+    return Material(
+      color: Colors.black,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _deskMiniHover = true),
+        onExit: (_) => setState(() => _deskMiniHover = false),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (video != null)
+              Video(
+                controller: video,
+                fit: BoxFit.contain,
+                controls: NoVideoControls,
+              ),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (_) => unawaited(windowManager.startDragging()),
+              onDoubleTap: _toggleDeskMini,
+            ),
+            if (_loading)
+              const IgnorePointer(
+                child: Center(
+                  child: SizedBox.square(
+                    dimension: 28,
+                    child: CircularProgressIndicator(strokeWidth: 3),
+                  ),
+                ),
+              ),
+            IgnorePointer(
+              ignoring: !visible,
+              child: AnimatedOpacity(
+                opacity: visible ? 1 : 0,
+                duration: const Duration(milliseconds: 150),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const IgnorePointer(
+                      child: ColoredBox(color: Color(0x59000000)),
+                    ),
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Row(
+                        children: [
+                          _miniIcon(
+                            Icons.open_in_full_rounded,
+                            '还原',
+                            _toggleDeskMini,
+                          ),
+                          _miniIcon(Icons.close_rounded, '关闭', () {
+                            unawaited(_restoreDeskMini());
+                            _back();
+                          }),
+                        ],
+                      ),
+                    ),
+                    Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _miniIcon(
+                            Icons.skip_previous_rounded,
+                            '上一集',
+                            _index > 0 ? () => _play(_index - 1) : null,
+                          ),
+                          _miniIcon(
+                            playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            playing ? '暂停' : '播放',
+                            _togglePlayback,
+                            size: 48,
+                            iconSize: 32,
+                          ),
+                          _miniIcon(
+                            Icons.skip_next_rounded,
+                            '下一集',
+                            _index + 1 < widget.detail.episodes.length
+                                ? () => _play(_index + 1)
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      left: 4,
+                      right: 4,
+                      bottom: 2,
+                      height: 20,
+                      child: StreamBuilder<Duration>(
+                        stream: _player.stream.position,
+                        initialData: _player.state.position,
+                        builder: (context, snapshot) {
+                          final duration = _player.state.duration.inMilliseconds;
+                          final max = duration > 0 ? duration.toDouble() : 1.0;
+                          final position = (snapshot.data ?? Duration.zero)
+                              .inMilliseconds
+                              .toDouble();
+                          return SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 5,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10,
+                              ),
+                            ),
+                            child: Slider(
+                              value: (_deskMiniSeek ?? position).clamp(0.0, max),
+                              max: max,
+                              onChanged: duration > 0
+                                  ? (value) =>
+                                        setState(() => _deskMiniSeek = value)
+                                  : null,
+                              onChangeEnd: (value) {
+                                setState(() => _deskMiniSeek = null);
+                                unawaited(
+                                  _seekTo(Duration(milliseconds: value.round())),
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            _miniEdge(
+              ResizeEdge.top,
+              SystemMouseCursors.resizeUpDown,
+              left: c,
+              right: c,
+              top: 0,
+              height: t,
+            ),
+            _miniEdge(
+              ResizeEdge.bottom,
+              SystemMouseCursors.resizeUpDown,
+              left: c,
+              right: c,
+              bottom: 0,
+              height: t,
+            ),
+            _miniEdge(
+              ResizeEdge.left,
+              SystemMouseCursors.resizeLeftRight,
+              left: 0,
+              top: c,
+              bottom: c,
+              width: t,
+            ),
+            _miniEdge(
+              ResizeEdge.right,
+              SystemMouseCursors.resizeLeftRight,
+              right: 0,
+              top: c,
+              bottom: c,
+              width: t,
+            ),
+            _miniEdge(
+              ResizeEdge.topLeft,
+              SystemMouseCursors.resizeUpLeftDownRight,
+              left: 0,
+              top: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.bottomRight,
+              SystemMouseCursors.resizeUpLeftDownRight,
+              right: 0,
+              bottom: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.topRight,
+              SystemMouseCursors.resizeUpRightDownLeft,
+              right: 0,
+              top: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.bottomLeft,
+              SystemMouseCursors.resizeUpRightDownLeft,
+              left: 0,
+              bottom: 0,
+              width: c,
+              height: c,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _videoPane(BuildContext context, {double topPadding = 0.0}) {
     return PlayerViewportView(
