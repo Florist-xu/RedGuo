@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import shutil
+import zipfile
 import subprocess
 import sys
 from pathlib import Path
@@ -70,7 +71,10 @@ def build(options, variant, flutter):
         ipa = output / f'{variant.slug}-{version}-ios-unsigned.ipa'
         if ipa.exists():
             ipa.unlink()
-        run(['ditto', '-c', '-k', '--sequesterRsrc', str(payload), str(ipa)])
+        run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(payload), str(ipa)])
+        with zipfile.ZipFile(ipa) as archive:
+            if not any(name.startswith('Payload/Runner.app/') for name in archive.namelist()):
+                raise SystemExit('IPA 结构错误：缺少 Payload/Runner.app/')
         shutil.rmtree(payload)
         artifacts.append(ipa)
     if not artifacts:
