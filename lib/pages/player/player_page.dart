@@ -155,6 +155,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureSupported = false;
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
+  bool _deskMini = false;
+  Rect? _deskMiniRestore;
   bool _pictureInPictureHandlerInstalled = false;
   bool _lastNativePipAutoEnter = false;
   int _lastNativePipWidth = 0;
@@ -175,6 +177,37 @@ class _PlayerScreenState extends State<PlayerScreen>
       _pictureInPictureActive ||
       (defaultTargetPlatform == TargetPlatform.android &&
           _pictureInPictureRequested);
+  bool get _deskMiniAvailable =>
+      !_television &&
+      !widget.feed &&
+      (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  Future<void> _toggleDeskMini() async {
+    if (_closed || !_deskMiniAvailable) return;
+    try {
+      if (!_deskMini) {
+        if (_fullscreen) await _rotate();
+        _deskMiniRestore = await windowManager.getBounds();
+        await windowManager.setAlwaysOnTop(true);
+        await windowManager.setSize(const Size(480, 290));
+        await windowManager.setAspectRatio(16 / 9);
+        if (mounted) setState(() => _deskMini = true);
+      } else {
+        await _restoreDeskMini();
+      }
+    } catch (error) {
+      _notice('小窗切换失败：$error');
+    }
+  }
+
+  Future<void> _restoreDeskMini() async {
+    final bounds = _deskMiniRestore;
+    _deskMiniRestore = null;
+    await windowManager.setAspectRatio(0);
+    await windowManager.setAlwaysOnTop(false);
+    if (bounds != null) await windowManager.setBounds(bounds);
+    if (mounted && _deskMini) setState(() => _deskMini = false);
+  }
+
   bool get _canUsePictureInPicture =>
       !_television &&
       widget.store.playbackPreferences.pictureInPicture &&
@@ -2453,6 +2486,16 @@ class _PlayerScreenState extends State<PlayerScreen>
         (Object _) {},
       ),
     );
+    if (_deskMini) {
+      _deskMini = false;
+      unawaited(
+        windowManager.setAspectRatio(0).then((_) {
+          windowManager.setAlwaysOnTop(false);
+          final b = _deskMiniRestore;
+          if (b != null) windowManager.setBounds(b);
+        }).catchError((Object _) {}),
+      );
+    }
     if (!widget.feed && Platform.isWindows) {
       unawaited(windowManager.setFullScreen(false));
     } else if (!widget.feed && (_mobile || _television && Platform.isAndroid)) {
@@ -2727,7 +2770,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       qualityLabel: _qualityLabel,
       showControlsOnPlaybackReady: _showControlsOnPlaybackReady,
       panelOpen: _panelOpen,
-      canUsePictureInPicture: _canUsePictureInPicture,
+      canUsePictureInPicture: _canUsePictureInPicture || _deskMiniAvailable,
       pictureInPictureRequested: _pictureInPictureRequested,
       playerFocus: _playerFocus,
       videoPaneKey: _videoPaneKey,
@@ -2753,7 +2796,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       onRetryDanmaku: _retryDanmakuFromControls,
       onPushToDevice: _pushToDevice,
       audioOnlyTarget: _castAudioTarget,
-      onEnterPictureInPicture: _enterPictureInPicture,
+      onEnterPictureInPicture:
+          _deskMiniAvailable ? _toggleDeskMini : _enterPictureInPicture,
       onRestorePictureInPicture: _restoreFromPictureInPicture,
       onTelevisionEpisodes: _televisionEpisodes,
       onTelevisionSettings: _televisionSettings,
