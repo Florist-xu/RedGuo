@@ -58,7 +58,7 @@ class AccountPairingCode {
   final DateTime expiresAt;
   final Uint8List _key;
   factory AccountPairingCode.parse(String raw, {bool allowLoopback = false}) {
-    if (raw.length > 1600) throw const FormatException('不是糖葫芦 Haw 登录配对码');
+    if (raw.length > 1600) throw const FormatException('不是Florist-TV 登录配对码');
     final uri = Uri.parse(raw);
     if (uri.scheme != 'thlhaw' ||
         uri.host != 'account-pair' ||
@@ -69,7 +69,7 @@ class AccountPairingCode {
         uri.queryParameters.keys.any(
           (k) => !{'v', 'host', 'port', 'name', 'id', 'expires'}.contains(k),
         )) {
-      throw const FormatException('不是糖葫芦 Haw 登录配对码');
+      throw const FormatException('不是Florist-TV 登录配对码');
     }
     final q = uri.queryParameters;
     final host = q['host'] ?? '';
@@ -100,7 +100,7 @@ class AccountPairingCode {
       id: q['id']!,
       host: host,
       port: port,
-      name: q['name'] ?? '糖葫芦 Haw',
+      name: q['name'] ?? 'Florist-TV',
       expiresAt: DateTime.fromMillisecondsSinceEpoch(expires * 1000),
       key: key,
     );

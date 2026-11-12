@@ -87,7 +87,7 @@ class _AccountPairingReceiveScreenState
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('手机糖葫芦 Haw 扫码登录')),
+    appBar: AppBar(title: const Text('手机Florist-TV 扫码登录')),
     body: SafeArea(
       child: Center(
         child: SingleChildScrollView(
@@ -99,7 +99,7 @@ class _AccountPairingReceiveScreenState
               builder: (context, _) => Column(
                 children: [
                   const Text(
-                    '手机与本设备连接同一局域网，在已登录的糖葫芦 Haw 中选择“扫一扫登录其他设备”，扫码并确认。',
+                    '手机与本设备连接同一局域网，在已登录的Florist-TV 中选择“扫一扫登录其他设备”，扫码并确认。',
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 20),
@@ -115,7 +115,7 @@ class _AccountPairingReceiveScreenState
                       size: 280,
                       padding: const EdgeInsets.all(20),
                       backgroundColor: Colors.white,
-                      semanticsLabel: '糖葫芦 Haw 设备登录配对码',
+                      semanticsLabel: 'Florist-TV 设备登录配对码',
                     )
                   else
                     const SizedBox(
@@ -317,7 +317,7 @@ class _AccountPairingScanScreenState extends State<AccountPairingScanScreen>
           Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
-              error ?? '只扫描电视或电脑上显示的糖葫芦 Haw 登录配对码。',
+              error ?? '只扫描电视或电脑上显示的Florist-TV 登录配对码。',
               textAlign: TextAlign.center,
             ),
           ),

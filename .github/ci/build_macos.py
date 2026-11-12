@@ -82,7 +82,7 @@ def sign_and_prepare_app(app_path: Path):
     print(f"macOS 应用主体全量深层签名成功: {app_path}")
 
 
-def create_dmg(app_path: Path, dmg_target: Path, volume_name: str = "糖葫芦Haw"):
+def create_dmg(app_path: Path, dmg_target: Path, volume_name: str = "Florist-TV"):
     """使用 macOS 原生 hdiutil 命令生成标准的拖拽安装 DMG 镜像包"""
     if dmg_target.exists():
         dmg_target.unlink()
@@ -136,7 +136,7 @@ def main():
     if platform.system() != "Darwin":
         raise SystemExit("macOS 构建仅支持 macOS 系统。")
 
-    parser = argparse.ArgumentParser(description="糖葫芦Haw macOS 自动化构建与打包脚本")
+    parser = argparse.ArgumentParser(description="Florist-TV macOS 自动化构建与打包脚本")
     parser.add_argument("--clean", action="store_true", help="构建前清理产物")
     parser.add_argument("--export-options", type=Path, help="使用指定的 ExportOptions.plist 归档")
     add_variant_argument(parser)

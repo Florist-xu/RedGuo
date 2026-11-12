@@ -9,6 +9,7 @@ import 'package:THLRedLook/pages/about/about_page.dart';
 import 'package:THLRedLook/pages/about/app_intro_page.dart';
 import 'package:THLRedLook/pages/about/contact_page.dart';
 import 'package:THLRedLook/pages/about/third_party_page.dart';
+import 'package:THLRedLook/pages/lan/lan_page.dart';
 import 'package:THLRedLook/pages/privacy/privacy_settings_page.dart';
 import 'package:THLRedLook/pages/settings/backup_settings_page.dart';
 import 'package:THLRedLook/pages/settings/icloud_sync_page.dart';
@@ -53,6 +54,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   String _appVersion = '1.0.0';
+  String _appBuild = '';
 
   @override
   void initState() {
@@ -66,6 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         setState(() {
           _appVersion = info.version.isNotEmpty ? info.version : '1.0.0';
+          _appBuild = info.buildNumber;
         });
       }
     } catch (_) {
@@ -455,6 +458,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   ListTile(
+                    leading: const Icon(Icons.devices_other_rounded),
+                    title: const Text('设备互联'),
+                    subtitle: const Text('同一局域网同步追剧；分屏播放：手机出声、电脑出画'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => openLanSync(context),
+                  ),
+                  ListTile(
                     leading: const Icon(Icons.receipt_long_rounded),
                     title: const Text('播放诊断日记'),
                     subtitle: const Text('查看原生解码、流媒体握手与解密运行轨迹'),
@@ -465,7 +475,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     key: const ValueKey('settings-about-entry'),
                     leading: const Icon(Icons.verified_outlined),
                     title: const Text('关于 $appName'),
-                    subtitle: Text(_appVersion),
+                    subtitle: Text(
+                      [
+                        'v$_appVersion',
+                        if (_appBuild.isNotEmpty) '构建 $_appBuild',
+                        if (buildTime.isNotEmpty) buildTime,
+                      ].join(' · '),
+                    ),
                     trailing: const Icon(Icons.chevron_right_rounded),
                     onTap: () => Navigator.push(
                       context,

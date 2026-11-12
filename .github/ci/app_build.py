@@ -10,13 +10,18 @@ if sys.platform == 'win32':
         pass
 
 
+def beijing_build_time():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+
+
 @dataclass(frozen=True)
 class BuildVariant:
     all_sources: bool = False
 
     @property
     def name(self):
-        return '糖葫芦Haw'
+        return 'Florist-TV'
 
     @property
     def slug(self):
@@ -28,7 +33,7 @@ class BuildVariant:
 
     @property
     def flutter_arguments(self):
-        return ['--dart-define=ALL_SOURCES=' + str(self.all_sources).lower()]
+        return ['--dart-define=ALL_SOURCES=' + str(self.all_sources).lower(), '--dart-define=BUILD_TIME=' + beijing_build_time()]
 
     @property
     def linker_flags(self):
