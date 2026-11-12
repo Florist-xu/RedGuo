@@ -12,7 +12,7 @@ if sys.platform == 'win32':
 
 def beijing_build_time():
     from datetime import datetime, timedelta, timezone
-    return datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+    return datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%dT%H:%M')
 
 
 @dataclass(frozen=True)

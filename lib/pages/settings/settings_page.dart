@@ -479,7 +479,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       [
                         'v$_appVersion',
                         if (_appBuild.isNotEmpty) '构建 $_appBuild',
-                        if (buildTime.isNotEmpty) buildTime,
+                        if (buildTime.isNotEmpty) buildTime.replaceFirst('T', ' '),
                       ].join(' · '),
                     ),
                     trailing: const Icon(Icons.chevron_right_rounded),
