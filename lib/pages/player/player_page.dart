@@ -1387,6 +1387,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<void> _setVideoDecode(bool enabled) async {
+    final player = _player;
+    if (player is LunaExoPlayer) {
+      await player.setAudioOnly(!enabled).catchError((Object error) {
+        DiaryService.add('[分屏] 切换纯音频失败: $error');
+      });
+      return;
+    }
     final native = _player.platform;
     if (native is NativePlayer) {
       await native
