@@ -58,7 +58,7 @@ env:
 jobs:
   android:
     name: Android 平台自动化打包
-    if: inputs.target_platform == null || inputs.target_platform == 'all' || inputs.target_platform == 'android'
+    if: github.event_name == 'workflow_dispatch' && (inputs.target_platform == 'all' || inputs.target_platform == 'android')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -295,7 +295,7 @@ jobs:
 
   macos:
     name: macOS 平台自动化打包
-    if: inputs.target_platform == null || inputs.target_platform == 'all' || inputs.target_platform == 'macos'
+    if: github.event_name == 'workflow_dispatch' && (inputs.target_platform == 'all' || inputs.target_platform == 'macos')
     runs-on: macos-latest
     timeout-minutes: 60
     steps:

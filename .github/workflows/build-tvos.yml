@@ -1,22 +1,6 @@
 name: Build Apple tvOS App
 
 on:
-  push:
-    branches: [main, master]
-    tags: ['v*']
-    paths:
-      - 'tvos/**'
-      - 'shared/**'
-      - 'assets/sources/hongguo.js'
-      - '.github/ci/**'
-      - '.github/workflows/build-tvos.yml'
-  pull_request:
-    paths:
-      - 'tvos/**'
-      - 'shared/**'
-      - 'assets/sources/hongguo.js'
-      - '.github/ci/**'
-      - '.github/workflows/build-tvos.yml'
   workflow_dispatch:
     inputs:
       publish_public:
