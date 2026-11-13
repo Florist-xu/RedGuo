@@ -410,12 +410,23 @@ class PlayerViewportView extends StatelessWidget {
                                 color: Colors.white70,
                               ),
                               const SizedBox(height: 16),
+                              const Text(
+                                '本机仅播放声音',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                  height: 1.4,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
                               Text(
-                                '本机仅播放声音\n画面正在 $audioOnlyTarget 上播放',
+                                '画面正在 $audioOnlyTarget 上播放，锁屏后也能继续',
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 16,
+                                  color: Colors.white54,
+                                  fontSize: 13,
                                   height: 1.5,
                                 ),
                               ),

@@ -2785,7 +2785,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           canRequestFocus: !_television,
           skipTraversal: _television,
           child: Scaffold(
-            backgroundColor: fullscreen || pictureInPicture || _mobile
+            backgroundColor: fullscreen || pictureInPicture
                 ? AppColors.black
                 : theme.scaffoldBackgroundColor,
             appBar: pictureInPicture || fullscreen || _mobile
@@ -2810,7 +2810,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ? _videoPane(context)
                 : SafeArea(
                     top: false,
-                    bottom: !fullscreen,
+                    bottom: !fullscreen && !_mobile,
                     left: !fullscreen,
                     right: !fullscreen,
                     child: LayoutBuilder(
