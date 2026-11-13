@@ -295,7 +295,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     _castFollower = widget.handoff?.intent.cast == true;
     if (_castFollower) {
-      unawaited(_player.setVolume(0));
+      if (widget.handoff?.intent.castAudio == true) {
+        _castAudioTarget =
+            LanController.current?.connection?.peer.name ?? '电脑';
+      } else {
+        unawaited(_player.setVolume(0));
+      }
       LanController.current?.setCastReceiver(
         LanCastReceiver(apply: _applyCastSync, stop: _stopCastFollower),
       );
@@ -1294,16 +1299,24 @@ class _PlayerScreenState extends State<PlayerScreen>
     await _player.pause().catchError((Object _) {});
     await _player.setVolume(100).catchError((Object _) {});
     if (mounted) {
-      setState(() => _playIntent = false);
+      setState(() {
+        _playIntent = false;
+        _castAudioTarget = null;
+      });
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('手机已停止分屏播放')));
+      ).showSnackBar(const SnackBar(content: Text('对方已停止分屏播放')));
     }
   }
 
   void _beginCastAudio(LanController link) {
     final peer = link.connection?.peer.name ?? '电脑';
-    setState(() => _castAudioTarget = peer);
+    final videoHere = link.kind == 'computer';
+    if (videoHere) {
+      unawaited(_player.setVolume(0));
+    } else {
+      setState(() => _castAudioTarget = peer);
+    }
     link.startCast(
       source: () => LanCastState(
         episode: widget.detail.episodes[_index].number,
@@ -1312,6 +1325,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         rate: _player.state.rate,
       ),
       onEnded: () {
+        if (videoHere) unawaited(_player.setVolume(100));
         if (mounted && !_closed) setState(() => _castAudioTarget = null);
       },
     );

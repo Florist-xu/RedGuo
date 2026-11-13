@@ -296,8 +296,13 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final desktop =
+        Platform.isWindows || Platform.isMacOS || Platform.isLinux;
     final foreground =
-        state == AppLifecycleState.resumed || casting || castReceiver != null;
+        state == AppLifecycleState.resumed ||
+        desktop && state == AppLifecycleState.inactive ||
+        casting ||
+        castReceiver != null;
     if (foreground == _foreground) return;
     _foreground = foreground;
     _storeChanged();

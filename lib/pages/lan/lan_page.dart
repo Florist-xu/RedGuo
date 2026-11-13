@@ -1045,14 +1045,18 @@ Future<void> showLanPush(
   final remote = await chooseLanDevice(context, link);
   if (remote == null || !context.mounted || !stillCurrent()) return;
   var cast = false;
-  if (onCastAccepted != null && remote.peer.kind == 'computer') {
+  final videoHere = link.kind == 'computer' && remote.peer.kind == 'phone';
+  if (onCastAccepted != null &&
+      (remote.peer.kind == 'computer' || videoHere)) {
     final choice = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('选择播放方式'),
         content: const Text(
           '接力播放：对方接着播放，本机暂停。\n\n'
-          '分屏播放：电脑静音只显示画面，本机继续播放声音，并持续对齐进度。',
+          videoHere
+              ? '分屏播放：本机静音只显示画面，手机播放声音，并持续对齐进度。'
+              : '分屏播放：电脑静音只显示画面，本机继续播放声音，并持续对齐进度。',
         ),
         actions: [
           TextButton(
@@ -1077,7 +1081,7 @@ Future<void> showLanPush(
     context,
     _LanPushPanel(
       controller: link,
-      snapshot: cast ? () => snapshot().asCast() : snapshot,
+      snapshot: cast ? () => snapshot().asCast(audio: videoHere) : snapshot,
       stillCurrent: stillCurrent,
       onAccepted: cast ? onCastAccepted! : onAccepted,
       cast: cast,

@@ -42,6 +42,8 @@ class LanTransport {
 
   String _deviceId = '';
   String _pin = '';
+  int _lastPort = 0;
+  File? _identityFile;
   _Session? _session;
   final Map<String, HttpClientRequest> _inflight = {};
 
@@ -110,6 +112,7 @@ class LanTransport {
       final directory = Directory(await _identityDirectory());
       await directory.create(recursive: true);
       file = File(p.join(directory.path, 'lan_identity.json'));
+      _identityFile = file;
       if (await file.exists()) {
         final data = jsonDecode(await file.readAsString());
         if (data is Map &&
@@ -117,6 +120,8 @@ class LanTransport {
             RegExp(r'^[a-f0-9]{64}$').hasMatch('${data['pin']}')) {
           _deviceId = '${data['id']}';
           _pin = '${data['pin']}';
+          final port = data['port'];
+          if (port is int && port > 1023 && port < 65536) _lastPort = port;
           return;
         }
       }
@@ -157,7 +162,21 @@ class LanTransport {
   Future<Map<String, dynamic>> _start(Map<String, dynamic> config) async {
     await _loadIdentity();
     await _stop(null);
-    final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+    HttpServer? bound;
+    if (_lastPort > 0) {
+      try {
+        bound = await HttpServer.bind(InternetAddress.anyIPv4, _lastPort);
+      } catch (_) {}
+    }
+    final server = bound ?? await HttpServer.bind(InternetAddress.anyIPv4, 0);
+    if (server.port != _lastPort) {
+      _lastPort = server.port;
+      try {
+        await _identityFile?.writeAsString(
+          jsonEncode({'id': _deviceId, 'pin': _pin, 'port': _lastPort}),
+        );
+      } catch (_) {}
+    }
     final session = _Session(_random(16), server, config);
     _session = session;
     server.listen(

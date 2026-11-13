@@ -134,6 +134,7 @@ class LanPlaybackIntent {
     required this.position,
     this.playing = true,
     this.cast = false,
+    this.castAudio = false,
   });
   final Drama drama;
   final String episodeID;
@@ -141,6 +142,7 @@ class LanPlaybackIntent {
   final double position;
   final bool playing;
   final bool cast;
+  final bool castAudio;
 
   factory LanPlaybackIntent.fromJson(Object? value) {
     final row = lanMap(value);
@@ -165,16 +167,18 @@ class LanPlaybackIntent {
       position: position.toDouble(),
       playing: row['playing'] as bool,
       cast: row['cast'] == true,
+      castAudio: row['castAudio'] == true,
     );
   }
 
-  LanPlaybackIntent asCast() => LanPlaybackIntent(
+  LanPlaybackIntent asCast({bool audio = false}) => LanPlaybackIntent(
     drama: drama,
     episodeID: episodeID,
     episode: episode,
     position: position,
     playing: playing,
     cast: true,
+    castAudio: audio,
   );
 
   Map<String, dynamic> toJson() => {
@@ -184,6 +188,7 @@ class LanPlaybackIntent {
     'position': position,
     'playing': playing,
     if (cast) 'cast': true,
+    if (castAudio) 'castAudio': true,
   };
   String get identity => lanHash([drama.id, episodeID, episode]);
 }
