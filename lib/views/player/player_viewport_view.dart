@@ -64,6 +64,7 @@ class PlayerViewportView extends StatelessWidget {
     required this.store,
     this.videoBuilder,
     this.controlsOverlay,
+    this.audioOnlyTarget,
     required this.onTogglePlayback,
     required this.onSeek,
     required this.onSeekTo,
@@ -125,6 +126,7 @@ class PlayerViewportView extends StatelessWidget {
   final LocalStore store;
   final Widget Function(Widget child)? videoBuilder;
   final Widget? controlsOverlay;
+  final String? audioOnlyTarget;
 
   final VoidCallback onTogglePlayback;
   final void Function(int) onSeek;
@@ -394,7 +396,46 @@ class PlayerViewportView extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (videoBuilder != null)
+                    if (audioOnlyTarget != null) ...[
+                      const ColoredBox(color: AppColors.black),
+                      Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 32),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.headphones_rounded,
+                                size: 56,
+                                color: Colors.white70,
+                              ),
+                              const SizedBox(height: 16),
+                              const Text(
+                                '本机仅播放声音',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                  height: 1.4,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '画面正在 $audioOnlyTarget 上播放，锁屏后也能继续',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 13,
+                                  height: 1.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      layeredControls,
+                    ] else if (videoBuilder != null)
                       videoBuilder!(layeredControls)
                     else if (player is LunaExoPlayer)
                       LunaExoVideoView(

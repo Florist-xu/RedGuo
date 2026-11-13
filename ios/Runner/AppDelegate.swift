@@ -4,6 +4,7 @@ import CFNetwork
 import AVKit
 import AVFoundation
 import CoreMedia
+import MediaPlayer
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, AVPictureInPictureControllerDelegate {
@@ -37,6 +38,74 @@ import CoreMedia
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
+  private var remoteCommandsReady = false
+
+  private func sendRemote(_ command: String, _ extra: [String: Any] = [:]) {
+    var arguments: [String: Any] = ["command": command]
+    for (key, value) in extra { arguments[key] = value }
+    deviceChannel?.invokeMethod("remoteCommand", arguments: arguments)
+  }
+
+  private func setupRemoteCommands() {
+    if remoteCommandsReady { return }
+    remoteCommandsReady = true
+    let center = MPRemoteCommandCenter.shared()
+    center.pauseCommand.addTarget { [weak self] _ in
+      self?.sendRemote("pause")
+      return .success
+    }
+    center.playCommand.addTarget { [weak self] _ in
+      self?.sendRemote("play")
+      return .success
+    }
+    center.togglePlayPauseCommand.addTarget { [weak self] _ in
+      self?.sendRemote("toggle")
+      return .success
+    }
+    center.nextTrackCommand.addTarget { [weak self] _ in
+      self?.sendRemote("next")
+      return .success
+    }
+    center.previousTrackCommand.addTarget { [weak self] _ in
+      self?.sendRemote("previous")
+      return .success
+    }
+    center.changePlaybackPositionCommand.addTarget { [weak self] event in
+      guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+      self?.sendRemote("seek", ["position": event.positionTime])
+      return .success
+    }
+  }
+
+  private func updateNowPlaying(_ info: [String: Any]) {
+    setupRemoteCommands()
+    let center = MPRemoteCommandCenter.shared()
+    center.pauseCommand.isEnabled = true
+    center.playCommand.isEnabled = true
+    center.togglePlayPauseCommand.isEnabled = true
+    center.nextTrackCommand.isEnabled = (info["hasNext"] as? Bool) ?? false
+    center.previousTrackCommand.isEnabled = (info["hasPrevious"] as? Bool) ?? false
+    center.changePlaybackPositionCommand.isEnabled = true
+    var now: [String: Any] = [:]
+    now[MPMediaItemPropertyTitle] = (info["title"] as? String) ?? ""
+    now[MPMediaItemPropertyPlaybackDuration] = (info["duration"] as? Double) ?? 0
+    now[MPNowPlayingInfoPropertyElapsedPlaybackTime] = (info["position"] as? Double) ?? 0
+    now[MPNowPlayingInfoPropertyPlaybackRate] = (info["rate"] as? Double) ?? 0
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = now
+  }
+
+  private func clearNowPlaying() {
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    guard remoteCommandsReady else { return }
+    let center = MPRemoteCommandCenter.shared()
+    center.pauseCommand.isEnabled = false
+    center.playCommand.isEnabled = false
+    center.togglePlayPauseCommand.isEnabled = false
+    center.nextTrackCommand.isEnabled = false
+    center.previousTrackCommand.isEnabled = false
+    center.changePlaybackPositionCommand.isEnabled = false
+  }
+
   override func application(
     _ application: UIApplication,
     supportedInterfaceOrientationsFor window: UIWindow?
@@ -58,8 +127,58 @@ import CoreMedia
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "DeviceSettings") {
       let channel = FlutterMethodChannel(name: "duanju/device", binaryMessenger: registrar.messenger())
       self.deviceChannel = channel
+      NotificationCenter.default.addObserver(
+        forName: AVAudioSession.interruptionNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        var text = "中断"
+        if let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+           let type = AVAudioSession.InterruptionType(rawValue: raw) {
+          text += type == .began ? " 开始" : " 结束"
+        }
+        if let reason = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt {
+          text += " reason=\(reason)"
+        }
+        self?.deviceChannel?.invokeMethod("audioSessionLog", arguments: text)
+      }
+      NotificationCenter.default.addObserver(
+        forName: AVAudioSession.routeChangeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        self?.deviceChannel?.invokeMethod("audioSessionLog", arguments: "路由变化 reason=\(raw) 当前输出=\(outputs)")
+      }
+      NotificationCenter.default.addObserver(
+        forName: AVAudioSession.routeChangeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable,
+              let previous = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+        else { return }
+        let headphoneTypes: Set<AVAudioSession.Port> = [
+          .headphones, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP, .usbAudio
+        ]
+        if previous.outputs.contains(where: { headphoneTypes.contains($0.portType) }) {
+          self?.deviceChannel?.invokeMethod("audioRouteChanged", arguments: ["reason": "oldDeviceUnavailable"])
+        }
+      }
       channel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else { return }
+        if call.method == "nowPlayingUpdate" {
+          self.updateNowPlaying(call.arguments as? [String: Any] ?? [:])
+          result(nil)
+          return
+        }
+        if call.method == "nowPlayingClear" {
+          self.clearNowPlaying()
+          result(nil)
+          return
+        }
         if call.method == "hongguoPlaybackProfileMetadata" || call.method == "hongguoPlaybackProfileRuntime" {
           do {
             if call.method == "hongguoPlaybackProfileRuntime", let profile = try HongguoPlaybackProfileVault.load() {

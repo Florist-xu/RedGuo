@@ -53,7 +53,7 @@ class HongguoLoginScreen extends StatelessWidget {
                   ListTile(
                     key: const Key('hongguo-login-haw-pair'),
                     leading: const Icon(Icons.phonelink_lock),
-                    title: const Text('手机糖葫芦 Haw 扫码'),
+                    title: const Text('手机Florist-TV 扫码'),
                     subtitle: const Text('同一局域网，手机确认后加密传递当前账号'),
                     onTap: () => _open(
                       context,

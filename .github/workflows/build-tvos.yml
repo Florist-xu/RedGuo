@@ -1,22 +1,6 @@
 name: Build Apple tvOS App
 
 on:
-  push:
-    branches: [main, master]
-    tags: ['v*']
-    paths:
-      - 'tvos/**'
-      - 'shared/**'
-      - 'assets/sources/hongguo.js'
-      - '.github/ci/**'
-      - '.github/workflows/build-tvos.yml'
-  pull_request:
-    paths:
-      - 'tvos/**'
-      - 'shared/**'
-      - 'assets/sources/hongguo.js'
-      - '.github/ci/**'
-      - '.github/workflows/build-tvos.yml'
   workflow_dispatch:
     inputs:
       publish_public:
@@ -159,7 +143,7 @@ jobs:
           name: tvos-packages
           path: dist/tvos/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
 
   release-tvos:
     name: Apple tvOS 产物自动发布至 GitHub Release

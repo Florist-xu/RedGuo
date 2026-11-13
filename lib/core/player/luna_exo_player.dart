@@ -177,6 +177,8 @@ class LunaExoPlayer implements Player {
   String? _controllerError;
   Player? _streamPlayer;
   kit.VideoController? _streamVideo;
+  bool _audioOnly = false;
+  bool get audioOnly => _audioOnly;
   final List<StreamSubscription<dynamic>> _streamSubscriptions = [];
 
   final ValueNotifier<int> revision = ValueNotifier<int>(0);
@@ -215,6 +217,27 @@ class LunaExoPlayer implements Player {
     return (await _controller?.getAudioTracks())?.length ?? 0;
   }
 
+  /// 纯音频模式：只解码并输出声音，不创建任何视频输出（用于分屏时手机只出声）。
+  /// 锁屏或切后台时，系统对「纯音频」播放不会像视频那样打断。
+  Future<void> setAudioOnly(bool value) async {
+    if (_audioOnly == value || _disposed) return;
+    _audioOnly = value;
+    final media = _currentMedia;
+    if (media == null) return;
+    final wasPlaying = state.playing;
+    final position = state.position;
+    DiaryService.add(
+      '[ExoPlayer] 切换为${value ? "纯音频" : "视频"}播放: 位置=${position.inSeconds}s 播放中=$wasPlaying',
+    );
+    final resume = Media(
+      media.uri,
+      httpHeaders: media.httpHeaders,
+      start: position > Duration.zero ? position : null,
+      extras: media.extras,
+    );
+    await open(resume, play: wasPlaying);
+  }
+
   Future<void> _openWithMediaKit(
     Media media, {
     String? key,
@@ -239,13 +262,15 @@ class LunaExoPlayer implements Player {
       ),
     );
     _streamPlayer = native;
-    _streamVideo = kit.VideoController(
-      native,
-      configuration: kit.VideoControllerConfiguration(
-        enableHardwareAcceleration: hwdec,
-        hwdec: hwdec ? (Platform.isAndroid ? null : 'auto-safe') : 'no',
-      ),
-    );
+    _streamVideo = _audioOnly
+        ? null
+        : kit.VideoController(
+            native,
+            configuration: kit.VideoControllerConfiguration(
+              enableHardwareAcceleration: hwdec,
+              hwdec: hwdec ? (Platform.isAndroid ? null : 'auto-safe') : 'no',
+            ),
+          );
     WidgetsBinding.instance.scheduleFrame();
     void mirror<T>(
       Stream<T> input,
@@ -347,6 +372,9 @@ class LunaExoPlayer implements Player {
         await backend.setProperty('demuxer-lavf-o', 'decryption_key=$key');
       }
       await backend.setProperty('network-timeout', '20');
+      if (_audioOnly) {
+        await backend.setProperty('vid', 'no');
+      }
       if (Platform.isAndroid) {
         if (hwdec) {
           await backend.setProperty('hwdec', 'mediacodec');
@@ -396,6 +424,15 @@ class LunaExoPlayer implements Player {
     _currentMedia = media;
     _currentPlay = play;
     final key = media.extras?['decryptionKey']?.toString() ?? '';
+    if (_audioOnly) {
+      DiaryService.add('[ExoPlayer] 纯音频模式起播（不创建视频输出）');
+      return _openWithMediaKit(
+        media,
+        key: key.isEmpty ? null : key,
+        play: play,
+        hwdec: false,
+      );
+    }
     if (key.isNotEmpty) {
       return _openWithMediaKit(
         media,
@@ -533,14 +570,20 @@ class LunaExoPlayer implements Player {
       DiaryService.add('[ExoPlayer] 本地缓存播放');
       c = _LunaVideoPlayerController.file(
         File(filePath),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
       );
     } else {
       c = _LunaVideoPlayerController.networkUrl(
         uri!,
         formatHint: formatHint,
         httpHeaders: headers,
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
       );
     }
 
@@ -576,7 +619,10 @@ class LunaExoPlayer implements Player {
           uri,
           formatHint: alternateFormat,
           httpHeaders: retryHeaders,
-          videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+          videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
         );
         try {
           await c.initialize().timeout(initializationTimeout);
@@ -1014,6 +1060,9 @@ class LunaExoPlayer implements Player {
 
   @override
   Future<void> pause() async {
+    DiaryService.add(
+      '[ExoPlayer] pause() 被调用 <- ${StackTrace.current.toString().split('\n').skip(1).take(5).map((l) => l.trim()).join(' <- ')}',
+    );
     if (_streamPlayer != null) return _streamPlayer!.pause();
     final c = _controller;
     if (c == null) return;

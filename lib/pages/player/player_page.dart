@@ -10,6 +10,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'package:THLRedLook/core/player/audio_route.dart';
 import 'package:THLRedLook/utils/theme/app_colors.dart';
 import 'package:THLRedLook/utils/screen/app_layout.dart';
 import 'package:THLRedLook/utils/screen/app_orientation.dart';
@@ -114,6 +115,11 @@ class _PlayerScreenState extends State<PlayerScreen>
   final _encryptedPlayback = EncryptedPlayback();
   Object _lanIdentity = Object();
   bool _handoffOwned = true;
+  bool _castFollower = false;
+  String? _castAudioTarget;
+  DateTime _castSeekedAt = DateTime(2000);
+  double _castError = 0;
+  DateTime _castHoldUntil = DateTime(2000);
   double? _lanFirstPosition;
   String? _savedProgressKey;
   final _health = PlaybackHealth();
@@ -152,6 +158,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureSupported = false;
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
+  bool _deskMini = false;
+  StreamSubscription<void>? _routeSub;
+  StreamSubscription<Map<String, dynamic>>? _remoteSub;
+  Timer? _nowPlayingTimer;
+  bool _deskMiniHover = false;
+  double? _deskMiniSeek;
+  Rect? _deskMiniRestore;
   bool _pictureInPictureHandlerInstalled = false;
   bool _lastNativePipAutoEnter = false;
   int _lastNativePipWidth = 0;
@@ -172,6 +185,52 @@ class _PlayerScreenState extends State<PlayerScreen>
       _pictureInPictureActive ||
       (defaultTargetPlatform == TargetPlatform.android &&
           _pictureInPictureRequested);
+  /// 前台，或本机正在作为分屏的声音端（锁屏后仍需自动下一集、续播与错误恢复）。
+  bool get _active =>
+      _foreground || _castFollower || (LanController.current?.casting ?? false);
+  bool get _deskMiniAvailable =>
+      !_television &&
+      !widget.feed &&
+      (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  Future<void> _toggleDeskMini() async {
+    if (_closed || !_deskMiniAvailable) return;
+    try {
+      if (!_deskMini) {
+        if (_fullscreen) await _rotate();
+        _deskMiniRestore = await windowManager.getBounds();
+        if (await windowManager.isMaximized()) await windowManager.unmaximize();
+        final ratio = _aspectRatio >= 1 ? _aspectRatio.clamp(1.0, 2.39) : 16 / 9;
+        await windowManager.setTitleBarStyle(
+          TitleBarStyle.hidden,
+          windowButtonVisibility: false,
+        );
+        await windowManager.setMinimumSize(const Size(160, 90));
+        await windowManager.setAlwaysOnTop(true);
+        await windowManager.setAspectRatio(ratio);
+        await windowManager.setSize(Size(480, 480 / ratio));
+        await windowManager.setAlignment(Alignment.bottomRight);
+        if (mounted) setState(() => _deskMini = true);
+      } else {
+        await _restoreDeskMini();
+      }
+    } catch (error) {
+      _notice('小窗切换失败：$error');
+    }
+  }
+
+  Future<void> _restoreDeskMini() async {
+    final bounds = _deskMiniRestore;
+    _deskMiniRestore = null;
+    await windowManager.setAspectRatio(0);
+    await windowManager.setAlwaysOnTop(false);
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await windowManager.setMinimumSize(
+      Platform.isMacOS ? const Size(960, 540) : const Size(0, 0),
+    );
+    if (bounds != null) await windowManager.setBounds(bounds);
+    if (mounted && _deskMini) setState(() => _deskMini = false);
+  }
+
   bool get _canUsePictureInPicture =>
       !_television &&
       widget.store.playbackPreferences.pictureInPicture &&
@@ -242,6 +301,37 @@ class _PlayerScreenState extends State<PlayerScreen>
               ));
     if (_player is LunaExoPlayer) {
       _player.setDecoderMode(preferences.decoderMode);
+    }
+    _routeSub = AudioRouteEvents.headphonesUnplugged.listen(
+      (_) => _onHeadphonesUnplugged(),
+    );
+    _player.stream.playing.listen((playing) {
+      if (_castFollower || (LanController.current?.casting ?? false)) {
+        DiaryService.add(
+          '[分屏] 播放器状态 playing=$playing 生命周期=${_lifecycleState.name} '
+          '位置=${_currentPosition.toStringAsFixed(1)}s',
+        );
+      }
+    });
+    if (!widget.feed && defaultTargetPlatform == TargetPlatform.iOS) {
+      _remoteSub = AudioRouteEvents.remoteCommands.listen(_onRemoteCommand);
+      _nowPlayingTimer = Timer.periodic(
+        const Duration(seconds: 3),
+        (_) => _publishNowPlaying(),
+      );
+    }
+    _castFollower = widget.handoff?.intent.cast == true;
+    if (_castFollower) {
+      if (widget.handoff?.intent.castAudio == true) {
+        _castAudioTarget =
+            LanController.current?.connection?.peer.name ?? '电脑';
+        unawaited(_setVideoDecode(false));
+      } else {
+        unawaited(_player.setVolume(0));
+      }
+      LanController.current?.setCastReceiver(
+        LanCastReceiver(apply: _applyCastSync, stop: _stopCastFollower),
+      );
     }
     _video = widget.videoBuilder == null && _player is! LunaExoPlayer
         ? VideoController(
@@ -323,7 +413,8 @@ class _PlayerScreenState extends State<PlayerScreen>
               currentPosition < duration - const Duration(seconds: 2)) {
             _queueRecovery();
           } else if (_autoAdvance &&
-              _foreground &&
+              !_castFollower &&
+              _active &&
               !_panelOpen &&
               _index + 1 < widget.detail.episodes.length) {
             _play(_index + 1, showControlsOnReady: false);
@@ -838,8 +929,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     _syncPreload();
     _health.reset();
     if (!visible) _interactions.cancel();
+    // 分屏播放时，出声的一端锁屏/切后台也要继续播放并保持对齐
+    final keepAudio =
+        _castFollower || (LanController.current?.casting ?? false);
     if (pauseWhenHidden &&
         !visible &&
+        !keepAudio &&
         (_lifecycleState == AppLifecycleState.paused ||
             _lifecycleState == AppLifecycleState.hidden)) {
       if (!_lifecyclePaused) {
@@ -1156,6 +1251,211 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
+  Map<String, dynamic> _applyCastSync(Map<String, dynamic> body, int recvAtMs) {
+    final episode = body['episode'];
+    final position = body['position'];
+    final playing = body['playing'];
+    final rate = body['rate'];
+    final sentAt = body['sentAt'];
+    final offset = body['offsetMs'];
+    if (episode is! int ||
+        position is! num ||
+        !position.isFinite ||
+        position < 0 ||
+        position > 604800 ||
+        playing is! bool ||
+        rate is! num ||
+        !(rate > 0 && rate <= 8) ||
+        sentAt is! num ||
+        offset is! num) {
+      throw const FormatException('分屏同步数据无效');
+    }
+    if (_closed || widget.store.profileEpoch != _profileEpoch) {
+      throw StateError('接收端播放已关闭');
+    }
+    // 本机刚操作过播放/暂停/拖动，等声音端处理完再跟随，避免被旧状态拉回
+    if (DateTime.now().isBefore(_castHoldUntil)) {
+      return {'state': 'hold'};
+    }
+    if (episode != widget.detail.episodes[_index].number) {
+      final next = widget.detail.episodes.indexWhere(
+        (item) => item.number == episode,
+      );
+      if (next < 0) throw StateError('接收端没有第 $episode 集');
+      if (!_loading) {
+        unawaited(
+          _play(next, position: position.toDouble(), playWhenReady: playing),
+        );
+      }
+      return {'state': 'switching'};
+    }
+    if (_loading || _error != null || _openedIndex != _index) {
+      return {'state': 'loading'};
+    }
+    final transit = offset == 0
+        ? 0.05
+        : ((recvAtMs - sentAt.toDouble() - offset.toDouble()) / 1000).clamp(
+            0.0,
+            2.0,
+          );
+    final state = _player.state;
+    final current = state.position.inMilliseconds / 1000;
+    final target = position.toDouble() + (playing ? transit * rate : 0);
+    _playIntent = playing;
+    if (!playing) {
+      if (state.playing) unawaited(_player.pause());
+      if ((current - target).abs() > .3) {
+        unawaited(_player.seek(Duration(milliseconds: (target * 1000).round())));
+      }
+      return {'state': 'paused', 'position': current};
+    }
+    if (!state.playing) unawaited(_player.play());
+    final raw = target - current;
+    _castError = (raw - _castError).abs() > 1.0
+        ? raw
+        : _castError * .6 + raw * .4;
+    final error = _castError;
+    final now = DateTime.now();
+    var wanted = rate.toDouble();
+    if (error.abs() > 1.5) {
+      if (now.difference(_castSeekedAt) > const Duration(seconds: 4)) {
+        _castSeekedAt = now;
+        _castError = 0;
+        unawaited(
+          _player.seek(Duration(milliseconds: (target * 1000).round())),
+        );
+      }
+    } else if (error.abs() > .15) {
+      // 误差较大才轻微调速（最多 ±2%），调速幅度小到听不出变调
+      wanted = rate * (1 + (error * .12).clamp(-.02, .02));
+    }
+    wanted = (wanted * 100).round() / 100;
+    if ((state.rate - wanted).abs() > .005) {
+      unawaited(_player.setRate(wanted));
+    }
+    return {'state': 'playing', 'position': current, 'error': error};
+  }
+
+  void _publishNowPlaying() {
+    if (_closed || widget.feed || _openedIndex != _index) return;
+    final episodes = widget.detail.episodes;
+    unawaited(
+      AppDevice.channel
+          .invokeMethod<void>('nowPlayingUpdate', {
+            'title':
+                '${widget.detail.drama.title} 第${episodes[_index].number}集',
+            'duration': _player.state.duration.inMilliseconds / 1000,
+            'position': _currentPosition,
+            'rate': _playIntent ? _player.state.rate : 0.0,
+            'hasNext': _index + 1 < episodes.length,
+            'hasPrevious': _index > 0,
+          })
+          .catchError((Object _) {}),
+    );
+  }
+
+  void _onRemoteCommand(Map<String, dynamic> event) {
+    if (_closed || widget.feed) return;
+    final command = '${event['command']}';
+    DiaryService.add('[遥控] 收到系统指令: $command');
+    switch (command) {
+      case 'pause':
+        _onHeadphonesUnplugged();
+      case 'play':
+        if (!_playIntent && !_castFollower) _togglePlayback();
+      case 'toggle':
+        if (_castFollower) return;
+        _togglePlayback();
+      case 'next':
+        if (_index + 1 < widget.detail.episodes.length && !_castFollower) {
+          unawaited(_play(_index + 1));
+        }
+      case 'previous':
+        if (_index > 0 && !_castFollower) unawaited(_play(_index - 1));
+      case 'seek':
+        final position = event['position'];
+        if (position is num && position.isFinite && position >= 0) {
+          unawaited(_seekTo(Duration(milliseconds: (position * 1000).round())));
+        }
+    }
+    _publishNowPlaying();
+  }
+
+  void _onHeadphonesUnplugged() {
+    if (_closed || widget.feed) return;
+    DiaryService.add('[分屏] 耳机断开，暂停播放');
+    if (_castFollower) {
+      unawaited(_stopCastFollower());
+      return;
+    }
+    if (!_playIntent) return;
+    setState(() => _playIntent = false);
+    unawaited(_player.pause());
+    unawaited(_saveProgress(flush: true));
+  }
+
+  Future<void> _setVideoDecode(bool enabled) async {
+    final player = _player;
+    if (player is LunaExoPlayer) {
+      await player.setAudioOnly(!enabled).catchError((Object error) {
+        DiaryService.add('[分屏] 切换纯音频失败: $error');
+      });
+      return;
+    }
+    final native = _player.platform;
+    if (native is NativePlayer) {
+      await native
+          .setProperty('vid', enabled ? 'auto' : 'no')
+          .catchError((Object _) {});
+    }
+  }
+
+  Future<void> _stopCastFollower() async {
+    if (!_castFollower || _closed) return;
+    DiaryService.add('[分屏] 对方停止分屏，本机停止跟随');
+    _castFollower = false;
+    await _player.pause().catchError((Object _) {});
+    await _player.setVolume(100).catchError((Object _) {});
+    await _setVideoDecode(true);
+    if (mounted) {
+      setState(() {
+        _playIntent = false;
+        _castAudioTarget = null;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('对方已停止分屏播放')));
+    }
+  }
+
+  void _beginCastAudio(LanController link) {
+    final peer = link.connection?.peer.name ?? '电脑';
+    final videoHere = link.kind == 'computer';
+    if (videoHere) {
+      unawaited(_player.setVolume(0));
+    } else {
+      setState(() => _castAudioTarget = peer);
+      unawaited(_setVideoDecode(false));
+    }
+    link.startCast(
+      source: () => LanCastState(
+        episode: widget.detail.episodes[_index].number,
+        position: _currentPosition,
+        playing: _player.state.playing && _playIntent,
+        rate: _player.state.rate,
+      ),
+      onControl: _applyCastControl,
+      onEnded: () {
+        if (videoHere) {
+          unawaited(_player.setVolume(100));
+        } else {
+          unawaited(_setVideoDecode(true));
+        }
+        if (mounted && !_closed) setState(() => _castAudioTarget = null);
+      },
+    );
+  }
+
   Future<void> _pushToDevice() async {
     final link = LanController.current;
     if (link == null ||
@@ -1192,6 +1492,10 @@ class _PlayerScreenState extends State<PlayerScreen>
           await _stopForLan();
           if (!current()) throw StateError('本机播放内容已变更');
         },
+        onCastAccepted: () async {
+          if (!current()) throw StateError('本机播放内容已变更');
+          _beginCastAudio(link);
+        },
       );
     } catch (error) {
       if (mounted && !_closed) {
@@ -1207,7 +1511,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   void _syncPreload() {
     if (_closed) return;
     if (!_preloadEnabled ||
-        !_foreground ||
+        !_active ||
         widget.localOnly ||
         _plan?.offline == true ||
         _loading ||
@@ -1298,6 +1602,12 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
+    if (_castFollower || (LanController.current?.casting ?? false)) {
+      DiaryService.add(
+        '[分屏] 生命周期=${state.name} 角色=${_castFollower ? "跟随端" : "发送端"} '
+        '播放中=${_player.state.playing} 位置=${_currentPosition.toStringAsFixed(1)}s',
+      );
+    }
     _applyLifecycleVisibility();
   }
 
@@ -1307,13 +1617,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     _pendingError = true;
     _requireRecovery = _requireRecovery || force;
-    if (!_foreground || (_errorTimer?.isActive ?? false)) {
+    if (!_active || (_errorTimer?.isActive ?? false)) {
       return;
     }
     final ticket = _generation;
     final position = _player.state.position;
     _errorTimer = Timer(const Duration(milliseconds: 900), () {
-      if (_closed || ticket != _generation || !_foreground || !_acceptErrors) {
+      if (_closed || ticket != _generation || !_active || !_acceptErrors) {
         return;
       }
       _pendingError = false;
@@ -1335,7 +1645,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final current = _plan;
     if (_closed ||
         !_acceptErrors ||
-        !_foreground ||
+        !_active ||
         current == null ||
         _error != null) {
       return;
@@ -1393,8 +1703,43 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  void _sendCastControl(Map<String, dynamic> body) {
+    _castHoldUntil = DateTime.now().add(const Duration(milliseconds: 2500));
+    final link = LanController.current;
+    if (link == null) return;
+    unawaited(
+      link.sendCastControl(body).catchError((Object error) {
+        DiaryService.add('[分屏] 控制指令发送失败: $error');
+        _castHoldUntil = DateTime(2000);
+      }),
+    );
+  }
+
+  Future<void> _applyCastControl(Map<String, dynamic> body) async {
+    if (_closed || _loading || _error != null) return;
+    switch (body['action']) {
+      case 'pause':
+        if (_playIntent) _togglePlayback();
+      case 'play':
+        if (!_playIntent) _togglePlayback();
+      case 'seek':
+        final position = body['position'];
+        if (position is num && position.isFinite && position >= 0) {
+          await _seekTo(Duration(milliseconds: (position * 1000).round()));
+        }
+    }
+  }
+
   void _togglePlayback() {
     if (_closed || _loading || _error != null) return;
+    if (_castFollower) {
+      // 跟随端的操作转发给声音端，本机先行响应
+      final play = !_playIntent;
+      setState(() => _playIntent = play);
+      unawaited(play ? _player.play() : _player.pause());
+      _sendCastControl({'action': play ? 'play' : 'pause'});
+      return;
+    }
     _handoffOwned = false;
     widget.handoff?.fail('接收端已操作播放');
     _interactions.cancel();
@@ -1725,7 +2070,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ? Duration(milliseconds: (position * 1000).round())
                 : null,
           ),
-          play: _foreground && _playIntent,
+          play: _active && _playIntent,
         );
         if (_closed || ticket != _generation) {
           return;
@@ -2142,6 +2487,14 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Future<void> _seekTo(Duration target) async {
     if (_closed || _loading || _error != null) return;
+    if (_castFollower) {
+      _sendCastControl({
+        'action': 'seek',
+        'position': target.inMilliseconds / 1000,
+      });
+      unawaited(_player.seek(target));
+      return;
+    }
     _handoffOwned = false;
     widget.handoff?.fail('接收端已调整播放位置');
     final ticket = ++_seekSequence;
@@ -2292,7 +2645,22 @@ class _PlayerScreenState extends State<PlayerScreen>
     _syncNativePictureInPictureConfig(force: true);
     unawaited(_player.pause().catchError((Object _) {}));
     final enhancementClosed = _enhancement.close();
+    _routeSub?.cancel();
+    _remoteSub?.cancel();
+    _nowPlayingTimer?.cancel();
+    if (!widget.feed && defaultTargetPlatform == TargetPlatform.iOS) {
+      unawaited(
+        AppDevice.channel
+            .invokeMethod<void>('nowPlayingClear')
+            .catchError((Object _) {}),
+      );
+    }
     LanController.current?.detachPlayback(_lanIdentity);
+    final castLink = LanController.current;
+    if (castLink != null) {
+      if (castLink.casting) unawaited(castLink.stopCast());
+      if (_castFollower) castLink.setCastReceiver(null);
+    }
     widget.handoff?.fail('接收端已退出播放');
     widget.store.removeListener(_accessChanged);
     _danmaku.dispose();
@@ -2330,6 +2698,17 @@ class _PlayerScreenState extends State<PlayerScreen>
         (Object _) {},
       ),
     );
+    if (_deskMini) {
+      _deskMini = false;
+      unawaited(
+        windowManager.setAspectRatio(0).then((_) {
+          windowManager.setAlwaysOnTop(false);
+          windowManager.setTitleBarStyle(TitleBarStyle.normal);
+          final b = _deskMiniRestore;
+          if (b != null) windowManager.setBounds(b);
+        }).catchError((Object _) {}),
+      );
+    }
     if (!widget.feed && Platform.isWindows) {
       unawaited(windowManager.setFullScreen(false));
     } else if (!widget.feed && (_mobile || _television && Platform.isAndroid)) {
@@ -2373,7 +2752,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final theme = Theme.of(context);
     final title = widget.detail.drama.title;
     final fullscreen = _showFullscreen;
-    final pictureInPicture = _pictureInPictureVisible;
+    final pictureInPicture = _pictureInPictureVisible || _deskMini;
     return PopScope(
       canPop: !_television && (pictureInPicture || !fullscreen),
       onPopInvokedWithResult: (didPop, result) {
@@ -2406,7 +2785,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           canRequestFocus: !_television,
           skipTraversal: _television,
           child: Scaffold(
-            backgroundColor: fullscreen || pictureInPicture || _mobile
+            backgroundColor: fullscreen || pictureInPicture
                 ? AppColors.black
                 : theme.scaffoldBackgroundColor,
             appBar: pictureInPicture || fullscreen || _mobile
@@ -2425,11 +2804,13 @@ class _PlayerScreenState extends State<PlayerScreen>
                       ),
                     ],
                   ),
-            body: pictureInPicture
+            body: _deskMini
+                ? _deskMiniView(context)
+                : pictureInPicture
                 ? _videoPane(context)
                 : SafeArea(
                     top: false,
-                    bottom: !fullscreen,
+                    bottom: !fullscreen && !_mobile,
                     left: !fullscreen,
                     right: !fullscreen,
                     child: LayoutBuilder(
@@ -2489,7 +2870,6 @@ class _PlayerScreenState extends State<PlayerScreen>
                                   seriesEntries: _currentSeriesEntries,
                                   onSeasonSelected: _switchSeason,
                                   onSelectEpisode: (index) => _play(index),
-                                  onSubmitDownload: _submitDownloadSelection,
                                 ),
                               ),
                             ],
@@ -2575,6 +2955,256 @@ class _PlayerScreenState extends State<PlayerScreen>
     ),
   );
 
+  Widget _miniIcon(
+    IconData icon,
+    String label,
+    VoidCallback? onPressed, {
+    double size = 36,
+    double iconSize = 22,
+  }) => IconButton(
+    onPressed: onPressed,
+    icon: Icon(icon),
+    iconSize: iconSize,
+    tooltip: label,
+    color: Colors.white,
+    disabledColor: Colors.white38,
+    style: IconButton.styleFrom(
+      fixedSize: Size.square(size),
+      padding: EdgeInsets.zero,
+    ),
+  );
+
+  Widget _miniEdge(
+    ResizeEdge edge,
+    MouseCursor cursor, {
+    double? left,
+    double? top,
+    double? right,
+    double? bottom,
+    double? width,
+    double? height,
+  }) => Positioned(
+    left: left,
+    top: top,
+    right: right,
+    bottom: bottom,
+    width: width,
+    height: height,
+    child: MouseRegion(
+      cursor: cursor,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => unawaited(windowManager.startResizing(edge)),
+      ),
+    ),
+  );
+
+  Widget _deskMiniView(BuildContext context) {
+    final video = _video;
+    final playing = _playIntent;
+    final visible = _deskMiniHover || !playing || _deskMiniSeek != null;
+    const t = 6.0;
+    const c = 12.0;
+    return Material(
+      color: Colors.black,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _deskMiniHover = true),
+        onExit: (_) => setState(() => _deskMiniHover = false),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (video != null)
+              Video(
+                controller: video,
+                fit: BoxFit.contain,
+                controls: NoVideoControls,
+              ),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (_) => unawaited(windowManager.startDragging()),
+              onDoubleTap: _toggleDeskMini,
+            ),
+            if (_loading)
+              const IgnorePointer(
+                child: Center(
+                  child: SizedBox.square(
+                    dimension: 28,
+                    child: CircularProgressIndicator(strokeWidth: 3),
+                  ),
+                ),
+              ),
+            IgnorePointer(
+              ignoring: !visible,
+              child: AnimatedOpacity(
+                opacity: visible ? 1 : 0,
+                duration: const Duration(milliseconds: 150),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const IgnorePointer(
+                      child: ColoredBox(color: Color(0x59000000)),
+                    ),
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Row(
+                        children: [
+                          _miniIcon(
+                            Icons.open_in_full_rounded,
+                            '还原',
+                            _toggleDeskMini,
+                          ),
+                          _miniIcon(Icons.close_rounded, '关闭', () {
+                            unawaited(_restoreDeskMini());
+                            _back();
+                          }),
+                        ],
+                      ),
+                    ),
+                    Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _miniIcon(
+                            Icons.skip_previous_rounded,
+                            '上一集',
+                            _index > 0 ? () => _play(_index - 1) : null,
+                          ),
+                          _miniIcon(
+                            playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            playing ? '暂停' : '播放',
+                            _togglePlayback,
+                            size: 48,
+                            iconSize: 32,
+                          ),
+                          _miniIcon(
+                            Icons.skip_next_rounded,
+                            '下一集',
+                            _index + 1 < widget.detail.episodes.length
+                                ? () => _play(_index + 1)
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      left: 4,
+                      right: 4,
+                      bottom: 2,
+                      height: 20,
+                      child: StreamBuilder<Duration>(
+                        stream: _player.stream.position,
+                        initialData: _player.state.position,
+                        builder: (context, snapshot) {
+                          final duration = _player.state.duration.inMilliseconds;
+                          final max = duration > 0 ? duration.toDouble() : 1.0;
+                          final position = (snapshot.data ?? Duration.zero)
+                              .inMilliseconds
+                              .toDouble();
+                          return SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 5,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10,
+                              ),
+                            ),
+                            child: Slider(
+                              value: (_deskMiniSeek ?? position).clamp(0.0, max),
+                              max: max,
+                              onChanged: duration > 0
+                                  ? (value) =>
+                                        setState(() => _deskMiniSeek = value)
+                                  : null,
+                              onChangeEnd: (value) {
+                                setState(() => _deskMiniSeek = null);
+                                unawaited(
+                                  _seekTo(Duration(milliseconds: value.round())),
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            _miniEdge(
+              ResizeEdge.top,
+              SystemMouseCursors.resizeUpDown,
+              left: c,
+              right: c,
+              top: 0,
+              height: t,
+            ),
+            _miniEdge(
+              ResizeEdge.bottom,
+              SystemMouseCursors.resizeUpDown,
+              left: c,
+              right: c,
+              bottom: 0,
+              height: t,
+            ),
+            _miniEdge(
+              ResizeEdge.left,
+              SystemMouseCursors.resizeLeftRight,
+              left: 0,
+              top: c,
+              bottom: c,
+              width: t,
+            ),
+            _miniEdge(
+              ResizeEdge.right,
+              SystemMouseCursors.resizeLeftRight,
+              right: 0,
+              top: c,
+              bottom: c,
+              width: t,
+            ),
+            _miniEdge(
+              ResizeEdge.topLeft,
+              SystemMouseCursors.resizeUpLeftDownRight,
+              left: 0,
+              top: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.bottomRight,
+              SystemMouseCursors.resizeUpLeftDownRight,
+              right: 0,
+              bottom: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.topRight,
+              SystemMouseCursors.resizeUpRightDownLeft,
+              right: 0,
+              top: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.bottomLeft,
+              SystemMouseCursors.resizeUpRightDownLeft,
+              left: 0,
+              bottom: 0,
+              width: c,
+              height: c,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _videoPane(BuildContext context, {double topPadding = 0.0}) {
     return PlayerViewportView(
       topPadding: topPadding,
@@ -2604,7 +3234,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       qualityLabel: _qualityLabel,
       showControlsOnPlaybackReady: _showControlsOnPlaybackReady,
       panelOpen: _panelOpen,
-      canUsePictureInPicture: _canUsePictureInPicture,
+      canUsePictureInPicture: _canUsePictureInPicture || _deskMiniAvailable,
       pictureInPictureRequested: _pictureInPictureRequested,
       playerFocus: _playerFocus,
       videoPaneKey: _videoPaneKey,
@@ -2629,7 +3259,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       onDanmakuSettings: _openDanmakuSettings,
       onRetryDanmaku: _retryDanmakuFromControls,
       onPushToDevice: _pushToDevice,
-      onEnterPictureInPicture: _enterPictureInPicture,
+      audioOnlyTarget: _castAudioTarget,
+      onEnterPictureInPicture:
+          _deskMiniAvailable ? _toggleDeskMini : _enterPictureInPicture,
       onRestorePictureInPicture: _restoreFromPictureInPicture,
       onTelevisionEpisodes: _televisionEpisodes,
       onTelevisionSettings: _televisionSettings,

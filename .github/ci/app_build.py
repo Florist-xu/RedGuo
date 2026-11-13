@@ -10,13 +10,18 @@ if sys.platform == 'win32':
         pass
 
 
+def beijing_build_time():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%dT%H:%M')
+
+
 @dataclass(frozen=True)
 class BuildVariant:
     all_sources: bool = False
 
     @property
     def name(self):
-        return '糖葫芦Haw'
+        return 'Florist-TV'
 
     @property
     def slug(self):
@@ -28,7 +33,7 @@ class BuildVariant:
 
     @property
     def flutter_arguments(self):
-        return ['--dart-define=ALL_SOURCES=' + str(self.all_sources).lower()]
+        return ['--dart-define=ALL_SOURCES=' + str(self.all_sources).lower(), '--dart-define=BUILD_TIME=' + beijing_build_time()]
 
     @property
     def linker_flags(self):
@@ -49,6 +54,13 @@ class BuildVariant:
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import re
+
+
+def build_name() -> str:
+    """版本号：CI 中为 1.0.<运行序号>，本地为 1.0.0。"""
+    import os
+    run = os.environ.get('GITHUB_RUN_NUMBER', '')
+    return f'1.0.{run}' if run.isdigit() else '1.0.0'
 
 
 def get_beijing_build_number() -> str:
@@ -74,7 +86,8 @@ def get_beijing_timestamp_build_number() -> str:
     return get_beijing_tvos_build_number()
 
 
-def sync_project_version(root: Path, base_version: str = "1.0.0") -> str:
+def sync_project_version(root: Path, base_version: str = "") -> str:
+    base_version = base_version or build_name()
     build_num = get_beijing_build_number()
     full_version = f"{base_version}+{build_num}"
     pubspec = root / "pubspec.yaml"

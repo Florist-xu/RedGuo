@@ -149,7 +149,7 @@ class ThirdPartyPage extends StatelessWidget {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              '糖葫芦Haw 基于优秀的开源技术生态构建，各组件版权均归原作者所有。',
+                              'Florist-TV 基于优秀的开源技术生态构建，各组件版权均归原作者所有。',
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: theme.textTheme.bodySmall?.color?.withValues(alpha: 0.8),
                                 height: 1.4,
@@ -232,7 +232,7 @@ class ThirdPartyPage extends StatelessWidget {
                 onPressed: () {
                   showLicensePage(
                     context: context,
-                    applicationName: '糖葫芦Haw',
+                    applicationName: 'Florist-TV',
                     applicationVersion: '1.0.0',
                     applicationIcon: Padding(
                       padding: const EdgeInsets.all(12),

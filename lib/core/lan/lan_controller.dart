@@ -18,6 +18,7 @@ export 'package:THLRedLook/models/lan/lan_sync_models.dart';
 
 part 'lan_sync.dart';
 part 'lan_playback.dart';
+part 'lan_cast.dart';
 
 class LanController extends ChangeNotifier with WidgetsBindingObserver {
   LanController(this.repository, this.store, {required this.kind}) {
@@ -70,6 +71,17 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
   LanPeer? local;
   LanConnection? connection;
   LanPlaybackHost? playbackHost;
+  LanCastReceiver? castReceiver;
+  Timer? _castTimer;
+  LanCastState Function()? _castSource;
+  VoidCallback? _castEnded;
+  Future<void> Function(Map<String, dynamic> body)? _castControl;
+  String _castId = '';
+  bool _castBusy = false;
+  int _castFailures = 0;
+  double _castOffsetMs = 0;
+  final List<({double rtt, double offset})> _castSamples = [];
+  String castMessage = '';
   Future<void> Function(LanIncomingPlayback)? openPlayback;
   String? error;
   String discoveryMessage = '';
@@ -285,13 +297,20 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final foreground = state == AppLifecycleState.resumed;
+    final desktop =
+        Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+    final foreground =
+        state == AppLifecycleState.resumed ||
+        desktop && state != AppLifecycleState.detached ||
+        casting ||
+        castReceiver != null;
     if (foreground == _foreground) return;
     _foreground = foreground;
     _storeChanged();
   }
 
   Future<void> _stop() async {
+    _endCast('已停止分屏播放');
     _pushSequence++;
     _pushing = false;
     _pairing = null;
@@ -524,6 +543,7 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> disconnect() async {
+    _endCast('连接已断开，已停止分屏播放');
     _pushSequence++;
     _pushing = false;
     _syncTicket++;
@@ -805,6 +825,8 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
           result = await completer.future;
         } else if (path is String && path.startsWith('play/')) {
           result = await _receivePlayback(path, body, remote);
+        } else if (path is String && path.startsWith('cast/')) {
+          result = await _receiveCast(path, body);
         } else {
           throw StateError('不支持此设备操作');
         }
@@ -957,6 +979,7 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
     store.removeListener(_storeChanged);
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    _castTimer?.cancel();
     _gather?.cancel();
     _urgent?.cancel();
     unawaited(

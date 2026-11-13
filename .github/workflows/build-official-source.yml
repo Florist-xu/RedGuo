@@ -34,7 +34,7 @@ jobs:
           name: official-js-source
           path: dist/source/hongguo.js
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
       - name: 发布可直接导入的 JS
         env:
           GH_TOKEN: ${{ github.token }}

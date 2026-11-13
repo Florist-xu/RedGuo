@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'package:THLRedLook/core/lan/lan_transport.dart';
 import 'package:THLRedLook/core/js/catpaw_js_runtime.dart';
 import 'package:THLRedLook/core/js/js_source_models.dart';
 import 'package:THLRedLook/models/catalog/models.dart';
@@ -41,6 +42,7 @@ class DartCoreEngine {
   String _activeSourceId = 'hongguo';
 
   final Map<String, int> _workLeases = {};
+  final LanTransport _lan = LanTransport();
 
   // 内存目录缓存
   final Map<String, Map<String, dynamic>> _catalogCache = {};
@@ -408,7 +410,10 @@ class DartCoreEngine {
 
       // 设备互联与任务租约
       case 'lan':
-        throw UnsupportedError('当前版本尚未实现设备互联传输服务');
+        return _lan.handle(
+          input['command'] as String? ?? '',
+          Map<String, dynamic>.from(input['lan'] as Map? ?? const {}),
+        );
       case 'workLease':
         final id = input['jobId'] as String? ?? '';
         final command = input['command'] as String? ?? '';

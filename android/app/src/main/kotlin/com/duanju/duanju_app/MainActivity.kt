@@ -9,7 +9,9 @@ import android.os.Bundle
 import android.os.BatteryManager
 import android.os.PowerManager
 import android.os.SystemClock
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.media.AudioManager
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
@@ -31,6 +33,28 @@ class MainActivity : FlutterActivity() {
     private var headroomReadAt = 0L
     private var thermalHeadroom: Double? = null
     private var deviceChannel: MethodChannel? = null
+    private var noisyReceiver: BroadcastReceiver? = null
+
+    private fun registerNoisyReceiver() {
+        if (noisyReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                    deviceChannel?.invokeMethod("audioRouteChanged", mapOf("reason" to "becomingNoisy"))
+                }
+            }
+        }
+        registerReceiver(receiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+        noisyReceiver = receiver
+    }
+
+    override fun onDestroy() {
+        noisyReceiver?.let {
+            try { unregisterReceiver(it) } catch (_: Exception) {}
+        }
+        noisyReceiver = null
+        super.onDestroy()
+    }
     private var televisionMode = false
     private var pipAutoEnterEnabled = false
     private var pipAspectWidth = 16
@@ -202,6 +226,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        registerNoisyReceiver()
         deviceChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "duanju/device")
             .also { channel ->
                 channel.setMethodCallHandler { call, result ->

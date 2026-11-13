@@ -219,6 +219,14 @@ class PlayerBottomBarView extends StatelessWidget {
           child: Text(qualityLabel),
         ),
       ],
+      if (onPush != null)
+        _toolButton(
+          context: context,
+          key: const ValueKey('player-push'),
+          tooltip: '推送 / 分屏播放',
+          onPressed: enabled ? onPush : null,
+          child: const Icon(Icons.cast_connected_rounded),
+        ),
       if (onPictureInPicture != null)
         _toolButton(
           context: context,
