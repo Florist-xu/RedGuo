@@ -4,6 +4,7 @@ import CFNetwork
 import AVKit
 import AVFoundation
 import CoreMedia
+import MediaPlayer
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, AVPictureInPictureControllerDelegate {
@@ -35,6 +36,74 @@ import CoreMedia
       try AVAudioSession.sharedInstance().setActive(true)
     } catch {}
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  private var remoteCommandsReady = false
+
+  private func sendRemote(_ command: String, _ extra: [String: Any] = [:]) {
+    var arguments: [String: Any] = ["command": command]
+    for (key, value) in extra { arguments[key] = value }
+    deviceChannel?.invokeMethod("remoteCommand", arguments: arguments)
+  }
+
+  private func setupRemoteCommands() {
+    if remoteCommandsReady { return }
+    remoteCommandsReady = true
+    let center = MPRemoteCommandCenter.shared()
+    center.pauseCommand.addTarget { [weak self] _ in
+      self?.sendRemote("pause")
+      return .success
+    }
+    center.playCommand.addTarget { [weak self] _ in
+      self?.sendRemote("play")
+      return .success
+    }
+    center.togglePlayPauseCommand.addTarget { [weak self] _ in
+      self?.sendRemote("toggle")
+      return .success
+    }
+    center.nextTrackCommand.addTarget { [weak self] _ in
+      self?.sendRemote("next")
+      return .success
+    }
+    center.previousTrackCommand.addTarget { [weak self] _ in
+      self?.sendRemote("previous")
+      return .success
+    }
+    center.changePlaybackPositionCommand.addTarget { [weak self] event in
+      guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+      self?.sendRemote("seek", ["position": event.positionTime])
+      return .success
+    }
+  }
+
+  private func updateNowPlaying(_ info: [String: Any]) {
+    setupRemoteCommands()
+    let center = MPRemoteCommandCenter.shared()
+    center.pauseCommand.isEnabled = true
+    center.playCommand.isEnabled = true
+    center.togglePlayPauseCommand.isEnabled = true
+    center.nextTrackCommand.isEnabled = (info["hasNext"] as? Bool) ?? false
+    center.previousTrackCommand.isEnabled = (info["hasPrevious"] as? Bool) ?? false
+    center.changePlaybackPositionCommand.isEnabled = true
+    var now: [String: Any] = [:]
+    now[MPMediaItemPropertyTitle] = (info["title"] as? String) ?? ""
+    now[MPMediaItemPropertyPlaybackDuration] = (info["duration"] as? Double) ?? 0
+    now[MPNowPlayingInfoPropertyElapsedPlaybackTime] = (info["position"] as? Double) ?? 0
+    now[MPNowPlayingInfoPropertyPlaybackRate] = (info["rate"] as? Double) ?? 0
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = now
+  }
+
+  private func clearNowPlaying() {
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    guard remoteCommandsReady else { return }
+    let center = MPRemoteCommandCenter.shared()
+    center.pauseCommand.isEnabled = false
+    center.playCommand.isEnabled = false
+    center.togglePlayPauseCommand.isEnabled = false
+    center.nextTrackCommand.isEnabled = false
+    center.previousTrackCommand.isEnabled = false
+    center.changePlaybackPositionCommand.isEnabled = false
   }
 
   override func application(
@@ -76,6 +145,16 @@ import CoreMedia
       }
       channel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else { return }
+        if call.method == "nowPlayingUpdate" {
+          self.updateNowPlaying(call.arguments as? [String: Any] ?? [:])
+          result(nil)
+          return
+        }
+        if call.method == "nowPlayingClear" {
+          self.clearNowPlaying()
+          result(nil)
+          return
+        }
         if call.method == "hongguoPlaybackProfileMetadata" || call.method == "hongguoPlaybackProfileRuntime" {
           do {
             if call.method == "hongguoPlaybackProfileRuntime", let profile = try HongguoPlaybackProfileVault.load() {

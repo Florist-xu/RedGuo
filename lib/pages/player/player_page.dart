@@ -159,6 +159,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureRequested = false;
   bool _deskMini = false;
   StreamSubscription<void>? _routeSub;
+  StreamSubscription<Map<String, dynamic>>? _remoteSub;
+  Timer? _nowPlayingTimer;
   bool _deskMiniHover = false;
   double? _deskMiniSeek;
   Rect? _deskMiniRestore;
@@ -307,6 +309,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         );
       }
     });
+    if (!widget.feed && defaultTargetPlatform == TargetPlatform.iOS) {
+      _remoteSub = AudioRouteEvents.remoteCommands.listen(_onRemoteCommand);
+      _nowPlayingTimer = Timer.periodic(
+        const Duration(seconds: 3),
+        (_) => _publishNowPlaying(),
+      );
+    }
     _castFollower = widget.handoff?.intent.cast == true;
     if (_castFollower) {
       if (widget.handoff?.intent.castAudio == true) {
@@ -1317,6 +1326,51 @@ class _PlayerScreenState extends State<PlayerScreen>
       unawaited(_player.setRate(wanted));
     }
     return {'state': 'playing', 'position': current, 'error': error};
+  }
+
+  void _publishNowPlaying() {
+    if (_closed || widget.feed || _openedIndex != _index) return;
+    final episodes = widget.detail.episodes;
+    unawaited(
+      AppDevice.channel
+          .invokeMethod<void>('nowPlayingUpdate', {
+            'title':
+                '${widget.detail.drama.title} 第${episodes[_index].number}集',
+            'duration': _player.state.duration.inMilliseconds / 1000,
+            'position': _currentPosition,
+            'rate': _playIntent ? _player.state.rate : 0.0,
+            'hasNext': _index + 1 < episodes.length,
+            'hasPrevious': _index > 0,
+          })
+          .catchError((Object _) {}),
+    );
+  }
+
+  void _onRemoteCommand(Map<String, dynamic> event) {
+    if (_closed || widget.feed) return;
+    final command = '${event['command']}';
+    DiaryService.add('[遥控] 收到系统指令: $command');
+    switch (command) {
+      case 'pause':
+        _onHeadphonesUnplugged();
+      case 'play':
+        if (!_playIntent && !_castFollower) _togglePlayback();
+      case 'toggle':
+        if (_castFollower) return;
+        _togglePlayback();
+      case 'next':
+        if (_index + 1 < widget.detail.episodes.length && !_castFollower) {
+          unawaited(_play(_index + 1));
+        }
+      case 'previous':
+        if (_index > 0 && !_castFollower) unawaited(_play(_index - 1));
+      case 'seek':
+        final position = event['position'];
+        if (position is num && position.isFinite && position >= 0) {
+          unawaited(_seekTo(Duration(milliseconds: (position * 1000).round())));
+        }
+    }
+    _publishNowPlaying();
   }
 
   void _onHeadphonesUnplugged() {
@@ -2533,6 +2587,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     unawaited(_player.pause().catchError((Object _) {}));
     final enhancementClosed = _enhancement.close();
     _routeSub?.cancel();
+    _remoteSub?.cancel();
+    _nowPlayingTimer?.cancel();
+    if (!widget.feed && defaultTargetPlatform == TargetPlatform.iOS) {
+      unawaited(
+        AppDevice.channel
+            .invokeMethod<void>('nowPlayingClear')
+            .catchError((Object _) {}),
+      );
+    }
     LanController.current?.detachPlayback(_lanIdentity);
     final castLink = LanController.current;
     if (castLink != null) {

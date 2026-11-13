@@ -280,6 +280,11 @@ class PipManager {
   }
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'remoteCommand') {
+      AudioRouteEvents.notifyRemote(call.arguments);
+      return true;
+    }
+
     if (call.method == 'audioRouteChanged') {
       AudioRouteEvents.notifyUnplugged();
       return true;
