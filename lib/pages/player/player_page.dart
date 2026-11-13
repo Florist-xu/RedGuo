@@ -117,6 +117,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _castFollower = false;
   String? _castAudioTarget;
   DateTime _castSeekedAt = DateTime(2000);
+  double _castError = 0;
   double? _lanFirstPosition;
   String? _savedProgressKey;
   final _health = PlaybackHealth();
@@ -1274,20 +1275,27 @@ class _PlayerScreenState extends State<PlayerScreen>
       return {'state': 'paused', 'position': current};
     }
     if (!state.playing) unawaited(_player.play());
-    final error = target - current;
+    final raw = target - current;
+    _castError = (raw - _castError).abs() > 1.0
+        ? raw
+        : _castError * .6 + raw * .4;
+    final error = _castError;
     final now = DateTime.now();
     var wanted = rate.toDouble();
-    if (error.abs() > .8) {
-      if (now.difference(_castSeekedAt) > const Duration(milliseconds: 2500)) {
+    if (error.abs() > 1.5) {
+      if (now.difference(_castSeekedAt) > const Duration(seconds: 4)) {
         _castSeekedAt = now;
+        _castError = 0;
         unawaited(
           _player.seek(Duration(milliseconds: (target * 1000).round())),
         );
       }
-    } else if (error.abs() > .06) {
-      wanted = rate * (1 + (error * .4).clamp(-.08, .08));
+    } else if (error.abs() > .15) {
+      // 误差较大才轻微调速（最多 ±2%），调速幅度小到听不出变调
+      wanted = rate * (1 + (error * .12).clamp(-.02, .02));
     }
-    if ((state.rate - wanted).abs() > .004) {
+    wanted = (wanted * 100).round() / 100;
+    if ((state.rate - wanted).abs() > .005) {
       unawaited(_player.setRate(wanted));
     }
     return {'state': 'playing', 'position': current, 'error': error};
