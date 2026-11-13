@@ -75,6 +75,7 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _castTimer;
   LanCastState Function()? _castSource;
   VoidCallback? _castEnded;
+  Future<void> Function(Map<String, dynamic> body)? _castControl;
   String _castId = '';
   bool _castBusy = false;
   int _castFailures = 0;

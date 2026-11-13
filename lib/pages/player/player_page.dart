@@ -119,6 +119,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   String? _castAudioTarget;
   DateTime _castSeekedAt = DateTime(2000);
   double _castError = 0;
+  DateTime _castHoldUntil = DateTime(2000);
   double? _lanFirstPosition;
   String? _savedProgressKey;
   final _health = PlaybackHealth();
@@ -1272,6 +1273,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_closed || widget.store.profileEpoch != _profileEpoch) {
       throw StateError('接收端播放已关闭');
     }
+    // 本机刚操作过播放/暂停/拖动，等声音端处理完再跟随，避免被旧状态拉回
+    if (DateTime.now().isBefore(_castHoldUntil)) {
+      return {'state': 'hold'};
+    }
     if (episode != widget.detail.episodes[_index].number) {
       final next = widget.detail.episodes.indexWhere(
         (item) => item.number == episode,
@@ -1439,6 +1444,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         playing: _player.state.playing && _playIntent,
         rate: _player.state.rate,
       ),
+      onControl: _applyCastControl,
       onEnded: () {
         if (videoHere) {
           unawaited(_player.setVolume(100));
@@ -1697,8 +1703,43 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  void _sendCastControl(Map<String, dynamic> body) {
+    _castHoldUntil = DateTime.now().add(const Duration(milliseconds: 2500));
+    final link = LanController.current;
+    if (link == null) return;
+    unawaited(
+      link.sendCastControl(body).catchError((Object error) {
+        DiaryService.add('[分屏] 控制指令发送失败: $error');
+        _castHoldUntil = DateTime(2000);
+      }),
+    );
+  }
+
+  Future<void> _applyCastControl(Map<String, dynamic> body) async {
+    if (_closed || _loading || _error != null) return;
+    switch (body['action']) {
+      case 'pause':
+        if (_playIntent) _togglePlayback();
+      case 'play':
+        if (!_playIntent) _togglePlayback();
+      case 'seek':
+        final position = body['position'];
+        if (position is num && position.isFinite && position >= 0) {
+          await _seekTo(Duration(milliseconds: (position * 1000).round()));
+        }
+    }
+  }
+
   void _togglePlayback() {
     if (_closed || _loading || _error != null) return;
+    if (_castFollower) {
+      // 跟随端的操作转发给声音端，本机先行响应
+      final play = !_playIntent;
+      setState(() => _playIntent = play);
+      unawaited(play ? _player.play() : _player.pause());
+      _sendCastControl({'action': play ? 'play' : 'pause'});
+      return;
+    }
     _handoffOwned = false;
     widget.handoff?.fail('接收端已操作播放');
     _interactions.cancel();
@@ -2446,6 +2487,14 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Future<void> _seekTo(Duration target) async {
     if (_closed || _loading || _error != null) return;
+    if (_castFollower) {
+      _sendCastControl({
+        'action': 'seek',
+        'position': target.inMilliseconds / 1000,
+      });
+      unawaited(_player.seek(target));
+      return;
+    }
     _handoffOwned = false;
     widget.handoff?.fail('接收端已调整播放位置');
     final ticket = ++_seekSequence;

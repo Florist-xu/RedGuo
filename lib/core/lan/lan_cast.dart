@@ -16,10 +16,12 @@ extension LanCast on LanController {
   void startCast({
     required LanCastState Function() source,
     required VoidCallback onEnded,
+    Future<void> Function(Map<String, dynamic> body)? onControl,
   }) {
     _endCast('');
     _castSource = source;
     _castEnded = onEnded;
+    _castControl = onControl;
     _castId = lanID();
     _castFailures = 0;
     _castOffsetMs = 0;
@@ -31,6 +33,11 @@ extension LanCast on LanController {
     );
     unawaited(_castTick());
     _notify();
+  }
+
+  /// 画面端（跟随端）把本机的播放、暂停、拖动操作转发给声音端。
+  Future<void> sendCastControl(Map<String, dynamic> body) async {
+    await _request('cast/control', body);
   }
 
   Future<void> stopCast() async {
@@ -50,6 +57,7 @@ extension LanCast on LanController {
     _castTimer?.cancel();
     _castTimer = null;
     _castSource = null;
+    _castControl = null;
     final ended = _castEnded;
     _castEnded = null;
     if (message.isNotEmpty) castMessage = message;
@@ -116,6 +124,12 @@ extension LanCast on LanController {
     final receiver = castReceiver;
     if (path == 'cast/stop') {
       await receiver?.stop();
+      return {};
+    }
+    if (path == 'cast/control') {
+      final control = _castControl;
+      if (control == null || !casting) throw StateError('对方未在分屏播放');
+      await control(body);
       return {};
     }
     if (path != 'cast/sync') throw StateError('不支持此分屏操作');
