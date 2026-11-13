@@ -1338,7 +1338,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ? AccountScreen(
                                     repository: widget.repository,
                                     store: widget.store,
-                                    initialHistory: widget.initialTab == 2,
+                                    initialHistory: true,
                                     onOpen: _openDrama,
                                     onOpenSettings: () => _changeTab(5),
                                     localLibraryBuilder: (history) =>
