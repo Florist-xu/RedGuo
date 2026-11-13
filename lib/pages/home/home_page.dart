@@ -1227,7 +1227,6 @@ class _HomeScreenState extends State<HomeScreen> {
           (0, Icons.explore_outlined, Icons.explore, '发现'),
           (4, Icons.play_circle_outline, Icons.play_circle, '推荐'),
           (1, Icons.person_outline, Icons.person, '我的'),
-          (3, Icons.download_outlined, Icons.download_rounded, '下载'),
           (5, Icons.settings_outlined, Icons.settings_rounded, '设置'),
         ];
         final navIndex = destinations.indexWhere((item) => item.$1 == _tab);

@@ -2870,7 +2870,6 @@ class _PlayerScreenState extends State<PlayerScreen>
                                   seriesEntries: _currentSeriesEntries,
                                   onSeasonSelected: _switchSeason,
                                   onSelectEpisode: (index) => _play(index),
-                                  onSubmitDownload: _submitDownloadSelection,
                                 ),
                               ),
                             ],

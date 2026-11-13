@@ -270,45 +270,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
 
-              // 4. 离线与存储
-              if (widget.store.canDownload)
-                SettingsGroupCard(
-                  title: '离线与存储',
-                  icon: Icons.download_rounded,
-                  children: [
-                    ListTile(
-                      leading: const Icon(Icons.video_settings_rounded),
-                      title: const Text('离线下载偏好'),
-                      subtitle: Text(
-                        '清晰度：${widget.store.downloadPreferences.qualityLabel}',
-                      ),
-                      trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute<void>(
-                          builder: (_) =>
-                              DownloadPreferencesScreen(store: widget.store),
-                        ),
-                      ),
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.storage_rounded),
-                      title: const Text('存储空间与下载目录'),
-                      subtitle: const Text('查看离线短剧空间占用并迁移保存路径'),
-                      trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute<void>(
-                          builder: (_) => StorageScreen(
-                            repository: widget.repository,
-                            store: widget.store,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-
               // 5. 数据与备份（收纳原有的设置与备份功能）
               SettingsGroupCard(
                 title: '数据与备份',

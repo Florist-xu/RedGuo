@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 
 import 'package:THLRedLook/utils/theme/app_colors.dart';
 import 'package:THLRedLook/core/bridge/core_bridge.dart';
-import 'package:THLRedLook/views/download/download_picker.dart';
 import 'package:THLRedLook/core/store/follow_state.dart';
 import 'package:THLRedLook/core/series/hongguo_series.dart';
 import 'package:THLRedLook/core/store/local_store.dart';
@@ -20,7 +19,6 @@ class PlayerMobilePanelView extends StatefulWidget {
     required this.store,
     required this.repository,
     required this.onSelectEpisode,
-    this.onSubmitDownload,
     this.seriesEntries = const [],
     this.onSeasonSelected,
   });
@@ -30,7 +28,6 @@ class PlayerMobilePanelView extends StatefulWidget {
   final LocalStore store;
   final AppRepository repository;
   final ValueChanged<int> onSelectEpisode;
-  final Future<void> Function(DownloadSelection selection)? onSubmitDownload;
   final List<HongguoSeriesEntry> seriesEntries;
   final ValueChanged<Drama>? onSeasonSelected;
 
@@ -241,22 +238,6 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
     );
   }
 
-  Widget _downloadTab() {
-    final colors = Theme.of(context).colorScheme;
-    if (!widget.repository.supportsDownloads || !widget.store.canDownload) {
-      return ColoredBox(
-        color: colors.surface,
-        child: const Center(child: Text('当前环境或权限暂未开放本地下载')),
-      );
-    }
-    return DownloadPicker(
-      detail: widget.detail,
-      preferences: widget.store.downloadPreferences,
-      embedded: true,
-      onSubmit: widget.onSubmitDownload,
-    );
-  }
-
   Widget _headerRow() {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
@@ -460,7 +441,6 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                   children: [
                     _tabButton(0, '选集'),
                     _tabButton(1, '简介'),
-                    _tabButton(2, '下载'),
                   ],
                 ),
               ),
@@ -492,9 +472,7 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                             ],
                           ),
                         )
-                      : _currentTab == 1
-                      ? _synopsisTab()
-                      : _downloadTab(),
+                      : _synopsisTab(),
                 ),
               ),
             ),
