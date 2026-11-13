@@ -902,8 +902,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     _syncPreload();
     _health.reset();
     if (!visible) _interactions.cancel();
+    // 分屏播放时，出声的一端锁屏/切后台也要继续播放并保持对齐
+    final keepAudio =
+        _castFollower || (LanController.current?.casting ?? false);
     if (pauseWhenHidden &&
         !visible &&
+        !keepAudio &&
         (_lifecycleState == AppLifecycleState.paused ||
             _lifecycleState == AppLifecycleState.hidden)) {
       if (!_lifecyclePaused) {
