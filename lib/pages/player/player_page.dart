@@ -299,6 +299,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     _routeSub = AudioRouteEvents.headphonesUnplugged.listen(
       (_) => _onHeadphonesUnplugged(),
     );
+    _player.stream.playing.listen((playing) {
+      if (_castFollower || (LanController.current?.casting ?? false)) {
+        DiaryService.add(
+          '[分屏] 播放器状态 playing=$playing 生命周期=${_lifecycleState.name} '
+          '位置=${_currentPosition.toStringAsFixed(1)}s',
+        );
+      }
+    });
     _castFollower = widget.handoff?.intent.cast == true;
     if (_castFollower) {
       if (widget.handoff?.intent.castAudio == true) {
@@ -1313,6 +1321,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _onHeadphonesUnplugged() {
     if (_closed || widget.feed) return;
+    DiaryService.add('[分屏] 耳机断开，暂停播放');
     if (_castFollower) {
       unawaited(_stopCastFollower());
       return;
@@ -1334,6 +1343,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Future<void> _stopCastFollower() async {
     if (!_castFollower || _closed) return;
+    DiaryService.add('[分屏] 对方停止分屏，本机停止跟随');
     _castFollower = false;
     await _player.pause().catchError((Object _) {});
     await _player.setVolume(100).catchError((Object _) {});
@@ -1522,6 +1532,12 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
+    if (_castFollower || (LanController.current?.casting ?? false)) {
+      DiaryService.add(
+        '[分屏] 生命周期=${state.name} 角色=${_castFollower ? "跟随端" : "发送端"} '
+        '播放中=${_player.state.playing} 位置=${_currentPosition.toStringAsFixed(1)}s',
+      );
+    }
     _applyLifecycleVisibility();
   }
 
