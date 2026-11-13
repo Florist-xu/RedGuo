@@ -128,6 +128,30 @@ import MediaPlayer
       let channel = FlutterMethodChannel(name: "duanju/device", binaryMessenger: registrar.messenger())
       self.deviceChannel = channel
       NotificationCenter.default.addObserver(
+        forName: AVAudioSession.interruptionNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        var text = "中断"
+        if let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+           let type = AVAudioSession.InterruptionType(rawValue: raw) {
+          text += type == .began ? " 开始" : " 结束"
+        }
+        if let reason = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt {
+          text += " reason=\(reason)"
+        }
+        self?.deviceChannel?.invokeMethod("audioSessionLog", arguments: text)
+      }
+      NotificationCenter.default.addObserver(
+        forName: AVAudioSession.routeChangeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        self?.deviceChannel?.invokeMethod("audioSessionLog", arguments: "路由变化 reason=\(raw) 当前输出=\(outputs)")
+      }
+      NotificationCenter.default.addObserver(
         forName: AVAudioSession.routeChangeNotification,
         object: nil,
         queue: .main

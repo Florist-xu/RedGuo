@@ -1023,6 +1023,9 @@ class LunaExoPlayer implements Player {
 
   @override
   Future<void> pause() async {
+    DiaryService.add(
+      '[ExoPlayer] pause() 被调用 <- ${StackTrace.current.toString().split('\n').skip(1).take(5).map((l) => l.trim()).join(' <- ')}',
+    );
     if (_streamPlayer != null) return _streamPlayer!.pause();
     final c = _controller;
     if (c == null) return;

@@ -280,6 +280,11 @@ class PipManager {
   }
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'audioSessionLog') {
+      DiaryService.add('[音频会话] ${call.arguments}');
+      return true;
+    }
+
     if (call.method == 'remoteCommand') {
       AudioRouteEvents.notifyRemote(call.arguments);
       return true;
