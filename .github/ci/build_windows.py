@@ -34,7 +34,7 @@ def main():
         prepared_official_source(root),
         china_mirror_environment(environment, options.cn_mirrors, gradle=False) as env,
     ):
-        sync_project_version(root, "1.0.0")
+        sync_project_version(root)
         with mirrored_pub_lockfile(root, env):
             run_command([flutter, 'pub', 'get'], cwd=root, env=env, check=True)
             run_command([flutter, 'build', 'windows', '--release', '--no-pub', f'--build-name={build_name()}', f'--build-number={beijing_build}', '-v', *variant.flutter_arguments], cwd=root, env=env, check=True)

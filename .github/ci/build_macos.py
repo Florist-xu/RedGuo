@@ -149,7 +149,7 @@ def main():
         raise SystemExit("请先确保 Flutter 与 Xcode 命令行工具已正确安装并加入 PATH。")
 
     with prepared_official_source(root):
-        sync_project_version(root, "1.0.0")
+        sync_project_version(root)
         build(options, variant, flutter, xcodebuild)
 
 

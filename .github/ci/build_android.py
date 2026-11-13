@@ -36,7 +36,7 @@ def main():
         china_mirror_environment(environment, options.cn_mirrors) as env,
         mirrored_pub_lockfile(root, env),
     ):
-        sync_project_version(root, "1.0.0")
+        sync_project_version(root)
         if options.cn_mirrors:
             print('本次构建启用国内依赖镜像，保留官方 Maven 仓库备用。', flush=True)
         subprocess.run([flutter, 'pub', 'get'], cwd=root, env=env, check=True)

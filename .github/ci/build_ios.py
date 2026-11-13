@@ -32,7 +32,7 @@ def main():
     if not flutter or not shutil.which('pod'):
         raise SystemExit('请安装 Flutter 和 CocoaPods。')
     with prepared_official_source(root):
-        sync_project_version(root, "1.0.0")
+        sync_project_version(root)
         build(options, variant, flutter)
 
 

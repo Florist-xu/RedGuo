@@ -997,7 +997,7 @@ function createSigningProfile(configuration,sdkVersion){
  return{produce,sign(input){const randoms=Array.from({length:3},()=>K.randomBytes(4).readUInt32LE(0)&2147483647),p=produce({...input,randoms});return{'x-gorgon':PublicProfileGorgon(p.query,p.body,input.epoch,Math.floor(Math.random()*65536)),'x-khronos':String(input.epoch),'x-ladon':gn(input.epoch).toString('base64'),'x-argus':Z(input.epoch).toString('base64'),'x-helios':PublicProfileHelios(input.epoch,configuration.id),'x-medusa':p.signature};}};
 }
 
-const builtInConfiguration={id:"NjQ2NjM3Nzk0",material:"sjwqRwog0QXcP4xEOPgnLtRtbIn/3N7dUQhpjSbpSJ0="};
+const builtInConfiguration={id:"__THL_HONGGUO_SIGNING_ID_BASE64__",material:"__THL_HONGGUO_SIGNING_MATERIAL_BASE64__"};
 const builtInProfile=builtInConfiguration.id.startsWith('__THL_')?null:createSigningProfile({id:S.from(builtInConfiguration.id,'base64'),material:S.from(builtInConfiguration.material,'base64')},'v04.10.03-ml-android');
 globalThis.__hongguoHasBuiltInSigning=true;
 globalThis.__hongguoUseLocalApkProfile=function(){};
