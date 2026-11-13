@@ -533,14 +533,20 @@ class LunaExoPlayer implements Player {
       DiaryService.add('[ExoPlayer] 本地缓存播放');
       c = _LunaVideoPlayerController.file(
         File(filePath),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
       );
     } else {
       c = _LunaVideoPlayerController.networkUrl(
         uri!,
         formatHint: formatHint,
         httpHeaders: headers,
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
       );
     }
 
@@ -576,7 +582,10 @@ class LunaExoPlayer implements Player {
           uri,
           formatHint: alternateFormat,
           httpHeaders: retryHeaders,
-          videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+          videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
         );
         try {
           await c.initialize().timeout(initializationTimeout);
