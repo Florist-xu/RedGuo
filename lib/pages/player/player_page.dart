@@ -299,6 +299,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (widget.handoff?.intent.castAudio == true) {
         _castAudioTarget =
             LanController.current?.connection?.peer.name ?? '电脑';
+        unawaited(_setVideoDecode(false));
       } else {
         unawaited(_player.setVolume(0));
       }
@@ -1305,11 +1306,21 @@ class _PlayerScreenState extends State<PlayerScreen>
     return {'state': 'playing', 'position': current, 'error': error};
   }
 
+  Future<void> _setVideoDecode(bool enabled) async {
+    final native = _player.platform;
+    if (native is NativePlayer) {
+      await native
+          .setProperty('vid', enabled ? 'auto' : 'no')
+          .catchError((Object _) {});
+    }
+  }
+
   Future<void> _stopCastFollower() async {
     if (!_castFollower || _closed) return;
     _castFollower = false;
     await _player.pause().catchError((Object _) {});
     await _player.setVolume(100).catchError((Object _) {});
+    await _setVideoDecode(true);
     if (mounted) {
       setState(() {
         _playIntent = false;
@@ -1328,6 +1339,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       unawaited(_player.setVolume(0));
     } else {
       setState(() => _castAudioTarget = peer);
+      unawaited(_setVideoDecode(false));
     }
     link.startCast(
       source: () => LanCastState(
@@ -1337,7 +1349,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         rate: _player.state.rate,
       ),
       onEnded: () {
-        if (videoHere) unawaited(_player.setVolume(100));
+        if (videoHere) {
+          unawaited(_player.setVolume(100));
+        } else {
+          unawaited(_setVideoDecode(true));
+        }
         if (mounted && !_closed) setState(() => _castAudioTarget = null);
       },
     );

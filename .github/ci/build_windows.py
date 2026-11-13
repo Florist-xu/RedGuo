@@ -8,7 +8,7 @@ from pathlib import Path
 
 from prepare_official_source import prepared_official_source
 from build_mirrors import china_mirror_environment, mirrored_pub_lockfile
-from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number
+from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number, build_name
 
 
 def run_command(cmd, **kwargs):
@@ -37,7 +37,7 @@ def main():
         sync_project_version(root, "1.0.0")
         with mirrored_pub_lockfile(root, env):
             run_command([flutter, 'pub', 'get'], cwd=root, env=env, check=True)
-            run_command([flutter, 'build', 'windows', '--release', '--no-pub', '--build-name=1.0.0', f'--build-number={beijing_build}', '-v', *variant.flutter_arguments], cwd=root, env=env, check=True)
+            run_command([flutter, 'build', 'windows', '--release', '--no-pub', f'--build-name={build_name()}', f'--build-number={beijing_build}', '-v', *variant.flutter_arguments], cwd=root, env=env, check=True)
             run_command([sys.executable, str(root / '.github' / 'ci' / 'package_release.py'), '--platform', 'windows', *variant.arguments],
                         cwd=root, env=env, check=True)
 

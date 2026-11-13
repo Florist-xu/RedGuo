@@ -562,3 +562,59 @@ jobs:
               --notes-file notes.md \
               --target "${{ github.sha }}"
           fi
+
+  nightly:
+    name: 预发布（iOS 与 Windows 安装包）
+    needs: [windows, ios]
+    if: always() && github.event_name == 'pull_request' && (needs.windows.result == 'success' || needs.ios.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: 发布预发布版本并生成更新说明
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for directory in artifacts/*/; do
+            for file in "$directory"*; do
+              [ -f "$file" ] || continue
+              name=$(basename "$file")
+              [ "$name" = "SHA256SUMS.txt" ] && continue
+              cp "$file" "release/$name"
+            done
+          done
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          tag="nightly"
+          previous=""
+          if gh release view "$tag" >/dev/null 2>&1; then
+            previous=$(gh release view "$tag" --json body --jq .body | sed -n 's/^构建提交：//p' | head -n1 || true)
+          fi
+          bj_time=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M')
+          {
+            echo "## Florist-TV 预发布（构建时间 ${bj_time}）"
+            echo
+            echo "构建提交：${SHA}"
+            echo "版本：1.0.${RUN_NUMBER}"
+            echo
+            echo "### 本次更新"
+            if [ -n "$previous" ] && git cat-file -e "${previous}^{commit}" 2>/dev/null; then
+              git log --no-merges --pretty='- %s' "${previous}..${SHA}" | head -n 40
+            else
+              git log --no-merges --pretty='- %s' -n 15 "${SHA}"
+            fi
+          } > notes.md
+          gh release delete "$tag" --cleanup-tag -y >/dev/null 2>&1 || true
+          gh release create "$tag" release/* --target "$SHA" --prerelease \
+            --title "Florist-TV 预发布 ${bj_time}（1.0.${RUN_NUMBER}）" --notes-file notes.md

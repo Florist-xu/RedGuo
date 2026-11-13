@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number
+from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number, build_name
 
 from prepare_official_source import prepared_official_source
 from source_manifest import verify_flutter_directory
@@ -224,7 +224,7 @@ def build(options, variant, flutter, xcodebuild):
             create_dmg(target_app, dmg_target)
             artifacts.append(dmg_target)
         else:
-            run([flutter, "build", "macos", "--release", "--no-pub", "--build-name=1.0.0", f"--build-number={beijing_build}", *variant.flutter_arguments])
+            run([flutter, "build", "macos", "--release", "--no-pub", f"--build-name={build_name()}", f"--build-number={beijing_build}", *variant.flutter_arguments])
             app_path = root / "build" / "macos" / "Build" / "Products" / "Release" / "THLRedLook.app"
             if not app_path.exists():
                 candidates = list((root / "build" / "macos" / "Build" / "Products" / "Release").glob("*.app"))
