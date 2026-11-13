@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:THLRedLook/core/player/audio_route.dart';
 import 'package:THLRedLook/core/bridge/core_bridge.dart';
 import 'package:THLRedLook/core/player/encrypted_playback.dart';
 import 'package:THLRedLook/utils/diary/diary_service.dart';
@@ -279,6 +280,11 @@ class PipManager {
   }
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'audioRouteChanged') {
+      AudioRouteEvents.notifyUnplugged();
+      return true;
+    }
+
     if (call.method == 'pipLog') {
       debugPrint('[PiP-Native] ${call.arguments}');
       return true;

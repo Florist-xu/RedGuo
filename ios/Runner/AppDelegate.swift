@@ -58,6 +58,22 @@ import CoreMedia
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "DeviceSettings") {
       let channel = FlutterMethodChannel(name: "duanju/device", binaryMessenger: registrar.messenger())
       self.deviceChannel = channel
+      NotificationCenter.default.addObserver(
+        forName: AVAudioSession.routeChangeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] note in
+        guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable,
+              let previous = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+        else { return }
+        let headphoneTypes: Set<AVAudioSession.Port> = [
+          .headphones, .bluetoothA2DP, .bluetoothLE, .bluetoothHFP, .usbAudio
+        ]
+        if previous.outputs.contains(where: { headphoneTypes.contains($0.portType) }) {
+          self?.deviceChannel?.invokeMethod("audioRouteChanged", arguments: ["reason": "oldDeviceUnavailable"])
+        }
+      }
       channel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else { return }
         if call.method == "hongguoPlaybackProfileMetadata" || call.method == "hongguoPlaybackProfileRuntime" {

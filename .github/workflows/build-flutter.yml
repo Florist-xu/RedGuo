@@ -135,7 +135,7 @@ jobs:
           name: android-packages
           path: dist/android/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
 
   windows:
     name: Windows 平台自动化打包
@@ -170,7 +170,7 @@ jobs:
           name: windows-packages
           path: dist/windows/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
 
   ios:
     name: iOS 平台自动化打包
@@ -285,7 +285,7 @@ jobs:
           name: ios-packages
           path: dist/ios/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
 
   macos:
     name: macOS 平台自动化打包
@@ -379,7 +379,7 @@ jobs:
           name: macos-packages
           path: dist/macos/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
 
   release:
     name: Flutter 跨平台产物汇总与 Release 发布

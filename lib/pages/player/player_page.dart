@@ -10,6 +10,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'package:THLRedLook/core/player/audio_route.dart';
 import 'package:THLRedLook/utils/theme/app_colors.dart';
 import 'package:THLRedLook/utils/screen/app_layout.dart';
 import 'package:THLRedLook/utils/screen/app_orientation.dart';
@@ -157,6 +158,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
   bool _deskMini = false;
+  StreamSubscription<void>? _routeSub;
   bool _deskMiniHover = false;
   double? _deskMiniSeek;
   Rect? _deskMiniRestore;
@@ -294,6 +296,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_player is LunaExoPlayer) {
       _player.setDecoderMode(preferences.decoderMode);
     }
+    _routeSub = AudioRouteEvents.headphonesUnplugged.listen(
+      (_) => _onHeadphonesUnplugged(),
+    );
     _castFollower = widget.handoff?.intent.cast == true;
     if (_castFollower) {
       if (widget.handoff?.intent.castAudio == true) {
@@ -1304,6 +1309,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       unawaited(_player.setRate(wanted));
     }
     return {'state': 'playing', 'position': current, 'error': error};
+  }
+
+  void _onHeadphonesUnplugged() {
+    if (_closed || widget.feed) return;
+    if (_castFollower) {
+      unawaited(_stopCastFollower());
+      return;
+    }
+    if (!_playIntent) return;
+    setState(() => _playIntent = false);
+    unawaited(_player.pause());
+    unawaited(_saveProgress(flush: true));
   }
 
   Future<void> _setVideoDecode(bool enabled) async {
@@ -2499,6 +2516,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _syncNativePictureInPictureConfig(force: true);
     unawaited(_player.pause().catchError((Object _) {}));
     final enhancementClosed = _enhancement.close();
+    _routeSub?.cancel();
     LanController.current?.detachPlayback(_lanIdentity);
     final castLink = LanController.current;
     if (castLink != null) {
