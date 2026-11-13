@@ -1052,11 +1052,11 @@ Future<void> showLanPush(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('选择播放方式'),
-        content: const Text(
+        content: Text(
           '接力播放：对方接着播放，本机暂停。\n\n'
-          videoHere
+          '${videoHere
               ? '分屏播放：本机静音只显示画面，手机播放声音，并持续对齐进度。'
-              : '分屏播放：电脑静音只显示画面，本机继续播放声音，并持续对齐进度。',
+              : '分屏播放：电脑静音只显示画面，本机继续播放声音，并持续对齐进度。'}',
         ),
         actions: [
           TextButton(
