@@ -159,6 +159,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
   bool _deskMini = false;
+  double? _immersiveSeek;
   StreamSubscription<void>? _routeSub;
   StreamSubscription<Map<String, dynamic>>? _remoteSub;
   Timer? _nowPlayingTimer;
@@ -2785,7 +2786,10 @@ class _PlayerScreenState extends State<PlayerScreen>
           canRequestFocus: !_television,
           skipTraversal: _television,
           child: Scaffold(
-            backgroundColor: fullscreen || pictureInPicture
+            backgroundColor:
+                fullscreen ||
+                    pictureInPicture ||
+                    (_mobile && _aspectRatio >= 1)
                 ? AppColors.black
                 : theme.scaffoldBackgroundColor,
             appBar: pictureInPicture || fullscreen || _mobile
@@ -2844,6 +2848,9 @@ class _PlayerScreenState extends State<PlayerScreen>
                               ),
                             ],
                           );
+                        }
+                        if (_mobile && _aspectRatio >= 1) {
+                          return _immersiveLayout(context, constraints);
                         }
                         if (_mobile) {
                           final topPadding = fullscreen
@@ -3201,6 +3208,355 @@ class _PlayerScreenState extends State<PlayerScreen>
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Future<void> _showSynopsis() async {
+    if (_panelOpen || _closed) return;
+    final drama = widget.detail.drama;
+    final text = drama.description.trim().isEmpty ? '暂无简介' : drama.description;
+    setState(() => _panelOpen = true);
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: const Color(0xFF20262B),
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        builder: (context) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  drama.title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Text(
+                      text,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14.5,
+                        height: 1.6,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _panelOpen = false);
+    }
+  }
+
+  Widget _immersivePill({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) => Material(
+    color: Colors.white.withValues(alpha: .10),
+    borderRadius: BorderRadius.circular(10),
+    child: InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white70, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: const TextStyle(color: Colors.white70, fontSize: 15),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
+  /// 竖屏观看横屏视频的沉浸式布局：深色背景、视频居中，
+  /// 下方是「全屏观看」、标题与简介、进度条和选集入口。
+  Widget _immersiveLayout(BuildContext context, BoxConstraints constraints) {
+    final media = MediaQuery.of(context);
+    final episodes = widget.detail.episodes;
+    final number = episodes[_index].number;
+    final drama = widget.detail.drama;
+    final videoHeight = (constraints.maxWidth / _aspectRatio).clamp(
+      0.0,
+      constraints.maxHeight * .5,
+    );
+    final synopsis = drama.description.trim();
+    return ColoredBox(
+      color: const Color(0xFF14181B),
+      child: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.only(top: media.padding.top),
+            child: SizedBox(
+              height: 52,
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: '返回',
+                    onPressed: _back,
+                    icon: const Icon(
+                      Icons.chevron_left_rounded,
+                      color: Colors.white,
+                      size: 32,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      '第$number集',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: () => unawaited(_openPanel(PlayerMenuSection.speed)),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.speed_rounded,
+                            color: Colors.white70,
+                            size: 22,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${_speed}x',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '更多设置',
+                    onPressed: () =>
+                        unawaited(_openPanel(PlayerMenuSection.settings)),
+                    icon: const Icon(
+                      Icons.more_vert_rounded,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: Align(
+              alignment: const Alignment(0, -0.25),
+              child: SizedBox(
+                height: videoHeight,
+                width: double.infinity,
+                child: _videoPane(context),
+              ),
+            ),
+          ),
+          Center(
+            child: _immersivePill(
+              icon: Icons.screen_rotation_alt_rounded,
+              label: '全屏观看',
+              onTap: _rotate,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: InkWell(
+                onTap: _showSynopsis,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        drama.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 19,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    const Icon(
+                      Icons.chevron_right_rounded,
+                      color: Colors.white70,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            child: GestureDetector(
+              onTap: _showSynopsis,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      synopsis.isEmpty
+                          ? '第$number集'
+                          : '第$number集 | $synopsis',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    '展开',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 28,
+            child: StreamBuilder<Duration>(
+              stream: _player.stream.position,
+              initialData: _player.state.position,
+              builder: (context, snapshot) {
+                final duration = _player.state.duration.inMilliseconds;
+                final max = duration > 0 ? duration.toDouble() : 1.0;
+                final position = (snapshot.data ?? Duration.zero)
+                    .inMilliseconds
+                    .toDouble();
+                return SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 3,
+                    activeTrackColor: Colors.white,
+                    inactiveTrackColor: Colors.white24,
+                    thumbColor: Colors.white,
+                    thumbShape: const RoundSliderThumbShape(
+                      enabledThumbRadius: 4,
+                    ),
+                    overlayShape: const RoundSliderOverlayShape(
+                      overlayRadius: 12,
+                    ),
+                  ),
+                  child: Slider(
+                    value: (_immersiveSeek ?? position).clamp(0.0, max),
+                    max: max,
+                    onChanged: duration > 0
+                        ? (value) => setState(() => _immersiveSeek = value)
+                        : null,
+                    onChangeEnd: (value) {
+                      setState(() => _immersiveSeek = null);
+                      unawaited(
+                        _seekTo(Duration(milliseconds: value.round())),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(
+              16,
+              6,
+              16,
+              media.padding.bottom > 12 ? media.padding.bottom : 12.0,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Material(
+                    color: Colors.white.withValues(alpha: .10),
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () =>
+                          unawaited(_openPanel(PlayerMenuSection.episodes)),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 14,
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '选集 · 全${episodes.length}集',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 17,
+                                ),
+                              ),
+                            ),
+                            const Icon(
+                              Icons.keyboard_arrow_up_rounded,
+                              color: Colors.white70,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                IconButton(
+                  tooltip: '全屏',
+                  onPressed: _rotate,
+                  icon: const Icon(
+                    Icons.fullscreen_rounded,
+                    color: Colors.white,
+                    size: 30,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
