@@ -3152,7 +3152,7 @@ class _PlayerScreenState extends State<PlayerScreen>
             if (video != null)
               Video(
                 controller: video,
-                fit: BoxFit.contain,
+                fit: BoxFit.cover,
                 controls: NoVideoControls,
               ),
             GestureDetector(
