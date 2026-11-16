@@ -1280,12 +1280,23 @@ class LunaExoVideoView extends StatelessWidget {
                 controls: kit.NoVideoControls,
               )
             else if (hasVideo)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: ratio,
-                  child: VideoPlayer(key: ObjectKey(c), c),
-                ),
-              )
+              fit == BoxFit.cover
+                  ? ClipRect(
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          width: ratio * 1000,
+                          height: 1000,
+                          child: VideoPlayer(key: ObjectKey(c), c),
+                        ),
+                      ),
+                    )
+                  : Center(
+                      child: AspectRatio(
+                        aspectRatio: ratio,
+                        child: VideoPlayer(key: ObjectKey(c), c),
+                      ),
+                    )
             else
               const ColoredBox(color: AppColors.black),
             if (controls != null) controls!(context),
