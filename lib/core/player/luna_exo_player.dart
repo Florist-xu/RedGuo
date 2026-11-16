@@ -473,7 +473,9 @@ class LunaExoPlayer implements Player {
       } catch (_) {}
       // 在 Android 电视端/低运存设备，底层 MediaCodec release 具有短暂的驱动回收延迟
       // 让出充足等待周期，彻底释放硬件解码器句柄与 Surface
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (Platform.isAndroid) {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+      }
     }
 
     if (_disposed || myGen != _openGeneration) return;

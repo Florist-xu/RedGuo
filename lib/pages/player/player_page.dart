@@ -1286,7 +1286,12 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (next < 0) throw StateError('接收端没有第 $episode 集');
       if (!_loading) {
         unawaited(
-          _play(next, position: position.toDouble(), playWhenReady: playing),
+          _play(
+            next,
+            position: position.toDouble(),
+            playWhenReady: playing,
+            showControlsOnReady: false,
+          ),
         );
       }
       return {'state': 'switching'};
@@ -1879,6 +1884,9 @@ class _PlayerScreenState extends State<PlayerScreen>
             : null);
     _preloader.clear();
     final ticket = ++_generation;
+    final switchWatch = Stopwatch()..start();
+    var resolvedMs = 0;
+    var openedMs = 0;
     _enhancement.suspend();
     _seekSequence++;
     _danmaku.setPlan(null);
@@ -1944,7 +1952,15 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (recoveryAction == PlaybackRecoveryAction.refresh) {
             failedPlan = previous;
           }
-          await widget.repository.release(previous.session);
+          if (isSeamlessAdvance) {
+            unawaited(
+              widget.repository
+                  .release(previous.session)
+                  .catchError((Object _) {}),
+            );
+          } else {
+            await widget.repository.release(previous.session);
+          }
         }
       });
       if (_closed || ticket != _generation) {
@@ -1970,6 +1986,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               localOnly: widget.localOnly,
               online: _forceOnline,
             );
+      resolvedMs = switchWatch.elapsedMilliseconds;
       if (prepared == null) {
         return;
       }
@@ -2078,6 +2095,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           return;
         }
         _openedIndex = index;
+        openedMs = switchWatch.elapsedMilliseconds;
         DiaryService.add(
           '[Play] 清晰度判定: 请求=${_requestedQuality > 0 ? "${_requestedQuality}P" : "自动(优先高清)"}, '
           '源下发=${plan.quality > 0 ? "${plan.quality}P" : "未知"}, '
@@ -2100,6 +2118,11 @@ class _PlayerScreenState extends State<PlayerScreen>
           setState(() {
             _loading = false;
           });
+          DiaryService.add(
+            '[换集] 第${widget.detail.episodes[index].number}集 总耗时=${switchWatch.elapsedMilliseconds}ms '
+            '取地址=${resolvedMs}ms 准备并打开=${openedMs - resolvedMs}ms '
+            '预热=${warmed != null} 无缝=$isSeamlessAdvance',
+          );
           _danmaku.setPlan(plan);
           _syncDanmaku();
           _acknowledgeHandoff();
