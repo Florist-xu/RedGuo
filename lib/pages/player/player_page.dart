@@ -3448,17 +3448,20 @@ class _PlayerScreenState extends State<PlayerScreen>
           ),
         ),
         Expanded(
-          child: Text(
-            '第$number集',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 19,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+          child: _immersiveClean
+              ? const SizedBox.shrink()
+              : Text(
+                  '第$number集',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
         ),
+        if (!_immersiveClean)
         InkWell(
           borderRadius: BorderRadius.circular(20),
           onTap: () => unawaited(_openPanel(PlayerMenuSection.speed)),
@@ -3547,7 +3550,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Widget _immersiveProgress() => SizedBox(
-    height: 28,
+    height: 20,
     child: StreamBuilder<Duration>(
       stream: _player.stream.position,
       initialData: _player.state.position,
@@ -3558,11 +3561,17 @@ class _PlayerScreenState extends State<PlayerScreen>
             .toDouble();
         return SliderTheme(
           data: SliderTheme.of(context).copyWith(
-            trackHeight: 3,
-            activeTrackColor: Colors.white,
-            inactiveTrackColor: Colors.white24,
+            trackHeight: _immersiveSeek != null ? 3 : 1.5,
+            activeTrackColor: Colors.white.withValues(
+              alpha: _immersiveSeek != null ? .95 : .55,
+            ),
+            inactiveTrackColor: Colors.white.withValues(
+              alpha: _immersiveSeek != null ? .3 : .12,
+            ),
             thumbColor: Colors.white,
-            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4),
+            thumbShape: _immersiveSeek != null
+                ? const RoundSliderThumbShape(enabledThumbRadius: 5)
+                : SliderComponentShape.noThumb,
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
           ),
           child: Slider(
