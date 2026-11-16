@@ -112,7 +112,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   final _menuRevision = ValueNotifier<int>(0);
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final _recovery = PlaybackRecovery();
-  final _encryptedPlayback = EncryptedPlayback();
+  var _encryptedPlayback = EncryptedPlayback();
+  // 下一集备用解密流 + 已预热的原生控制器（仅 iOS）
+  EncryptedPlayback? _standbyEncrypted;
+  PlaybackPlan? _standbyPlan;
+  String? _standbyRawUrl;
+  bool _standbyBusy = false;
+  int _standbyTag = 0;
   Object _lanIdentity = Object();
   bool _handoffOwned = true;
   bool _castFollower = false;
@@ -293,6 +299,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _preloadEnabled = preferences.preload;
     _loader = PlaybackLoader(widget.repository);
     _preloader = PlaybackPreloader(widget.repository);
+    _preloader.addListener(_warmStandby);
     _danmaku = DanmakuController(widget.repository)
       ..setEnabled(_danmakuEnabled);
     widget.store.addListener(_accessChanged);
@@ -1539,6 +1546,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.store.locked ||
         _index + 1 >= widget.detail.episodes.length) {
       _preloader.clear();
+      if (_standbyRawUrl != null) unawaited(_dropStandby());
       return;
     }
     final state = _player.state;
@@ -1559,6 +1567,67 @@ class _PlayerScreenState extends State<PlayerScreen>
       widget.detail.episodes[_index + 1],
       quality: _requestedQuality,
     );
+    _warmStandby();
+  }
+
+  /// iOS：下一集播放地址就绪后，提前建好解密流与原生控制器，换集时直接接管。
+  void _warmStandby() {
+    final player = _player;
+    if (_closed ||
+        !Platform.isIOS ||
+        player is! LunaExoPlayer ||
+        _standbyBusy ||
+        _castFollower ||
+        (LanController.current?.casting ?? false)) {
+      return;
+    }
+    final raw = _preloader.ready;
+    if (raw == null || raw.local || raw.url.isEmpty) return;
+    if (_standbyRawUrl == raw.url) return;
+    _standbyBusy = true;
+    final tag = ++_standbyTag;
+    unawaited(() async {
+      final encrypted = EncryptedPlayback();
+      var kept = false;
+      try {
+        final prepared = await encrypted.prepare(raw);
+        if (_closed || tag != _standbyTag) return;
+        final ok = await player.warmUp(
+          Media(
+            prepared.url,
+            httpHeaders: prepared.headers,
+            extras: {'decryptionKey': prepared.decryptionKey},
+          ),
+        );
+        if (!ok || _closed || tag != _standbyTag) return;
+        await _dropStandby(keepPlayer: true);
+        _standbyEncrypted = encrypted;
+        _standbyPlan = prepared;
+        _standbyRawUrl = raw.url;
+        kept = true;
+      } catch (_) {
+      } finally {
+        if (!kept) await encrypted.close().catchError((Object _) {});
+        _standbyBusy = false;
+      }
+    }());
+  }
+
+  Future<void> _dropStandby({bool keepPlayer = false}) async {
+    _standbyTag++;
+    final encrypted = _standbyEncrypted;
+    _standbyEncrypted = null;
+    _standbyPlan = null;
+    _standbyRawUrl = null;
+    if (!keepPlayer) {
+      final player = _player;
+      if (player is LunaExoPlayer) {
+        unawaited(player.discardStandby().catchError((Object _) {}));
+      }
+    }
+    if (encrypted != null) {
+      unawaited(encrypted.close().catchError((Object _) {}));
+    }
   }
 
   void _syncDanmaku({bool discontinuity = false}) {
@@ -1950,7 +2019,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         await _enhancement.beforeMedia();
         if (_closed || ticket != _generation) return;
         _openedIndex = -1;
-        if (!isSeamlessAdvance || _player is LunaExoPlayer) {
+        final standbyHit =
+            Platform.isIOS &&
+            warmed != null &&
+            !forceEncryptedCache &&
+            _standbyEncrypted != null &&
+            _standbyRawUrl == warmed.url;
+        if (!isSeamlessAdvance || (_player is LunaExoPlayer && !standbyHit)) {
           await _player.stop();
         }
         await _encryptedPlayback.cancel();
@@ -2003,18 +2078,38 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
       if (Platform.isAndroid || Platform.isIOS) {
         failureStage = 'prepare';
-        prepared = await _encryptedPlayback.prepare(
-          prepared,
-          forceCache: forceEncryptedCache,
-          progress: (value) {
-            if (mounted && !_closed && ticket == _generation) {
-              setState(() {
-                _loading = true;
-                _loadingMessage = '正在准备视频 ${(value * 100).round()}%';
-              });
-            }
-          },
-        );
+        final standbyReady =
+            Platform.isIOS &&
+            warmed != null &&
+            !forceEncryptedCache &&
+            _standbyEncrypted != null &&
+            _standbyPlan != null &&
+            _standbyRawUrl == prepared.url;
+        if (standbyReady) {
+          // 接管已提前准备好的解密流（原控制器预热也会在 open 时被接管）
+          final old = _encryptedPlayback;
+          _encryptedPlayback = _standbyEncrypted!;
+          prepared = _standbyPlan!;
+          _standbyEncrypted = null;
+          _standbyPlan = null;
+          _standbyRawUrl = null;
+          _standbyTag++;
+          unawaited(old.close().catchError((Object _) {}));
+        } else {
+          if (_standbyRawUrl != null) unawaited(_dropStandby());
+          prepared = await _encryptedPlayback.prepare(
+            prepared,
+            forceCache: forceEncryptedCache,
+            progress: (value) {
+              if (mounted && !_closed && ticket == _generation) {
+                setState(() {
+                  _loading = true;
+                  _loadingMessage = '正在准备视频 ${(value * 100).round()}%';
+                });
+              }
+            },
+          );
+        }
       }
       final plan = prepared;
       failureStage = 'open';
@@ -2678,6 +2773,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       PipManager.instance.retainPlaybackResource(_encryptedPlayback.close);
     }
     _closed = true;
+    unawaited(_dropStandby(keepPlayer: true));
     _syncNativePictureInPictureConfig(force: true);
     unawaited(_player.pause().catchError((Object _) {}));
     final enhancementClosed = _enhancement.close();

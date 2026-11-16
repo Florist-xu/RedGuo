@@ -148,6 +148,9 @@ class LunaExoPlayer implements Player {
   }
 
   VideoPlayerController? _controller;
+  VideoPlayerController? _standby;
+  String? _standbyUrl;
+  int _standbyGeneration = 0;
   final Duration initializationTimeout;
   VoidCallback? _valueListener;
   Timer? _positionPollTimer;
@@ -412,6 +415,83 @@ class LunaExoPlayer implements Player {
     }
   }
 
+  /// iOS：播放当前集时，提前为下一集建好并初始化好原生控制器（不播放、不出声）。
+  /// 换集时 [open] 发现地址一致就直接接管，省掉新建与初始化的等待。
+  Future<bool> warmUp(Media media) async {
+    if (_disposed || !Platform.isIOS || _audioOnly) return false;
+    if (_decoderMode == PlaybackDecoderMode.compatible) return false;
+    if ((media.extras?['decryptionKey']?.toString() ?? '').isNotEmpty) {
+      return false;
+    }
+    final url = media.uri;
+    final uri = Uri.tryParse(url);
+    if (uri == null || url.isEmpty) return false;
+    final isFile = url.startsWith('/') || uri.scheme == 'file';
+    final isLoopback =
+        (uri.host == '127.0.0.1' || uri.host == 'localhost') &&
+        uri.path.endsWith('.mp4');
+    if (!isFile && !isLoopback) return false;
+    if (_standby != null && _standbyUrl == url) return true;
+    await discardStandby();
+    final gen = ++_standbyGeneration;
+    final options = VideoPlayerOptions(
+      mixWithOthers: true,
+      allowBackgroundPlayback: true,
+    );
+    final VideoPlayerController c = isFile
+        ? _LunaVideoPlayerController.file(
+            File(uri.scheme == 'file' ? uri.toFilePath() : url),
+            videoPlayerOptions: options,
+          )
+        : _LunaVideoPlayerController.networkUrl(
+            uri,
+            httpHeaders: <String, String>{
+              if (media.httpHeaders != null) ...media.httpHeaders!,
+            },
+            videoPlayerOptions: options,
+          );
+    try {
+      await c.initialize().timeout(initializationTimeout);
+    } catch (e) {
+      DiaryService.add('[ExoPlayer] 下一集预热失败（忽略）: $e');
+      try {
+        await c.dispose();
+      } catch (_) {}
+      return false;
+    }
+    if (_disposed || gen != _standbyGeneration) {
+      try {
+        await c.dispose();
+      } catch (_) {}
+      return false;
+    }
+    _standby = c;
+    _standbyUrl = url;
+    DiaryService.add('[ExoPlayer] 下一集已预热（控制器已初始化）');
+    return true;
+  }
+
+  Future<void> discardStandby() async {
+    _standbyGeneration++;
+    final c = _standby;
+    _standby = null;
+    _standbyUrl = null;
+    if (c != null) {
+      try {
+        await c.dispose();
+      } catch (_) {}
+    }
+  }
+
+  VideoPlayerController? _takeStandby(String url) {
+    final c = _standby;
+    if (c == null || _standbyUrl != url) return null;
+    _standby = null;
+    _standbyUrl = null;
+    _standbyGeneration++;
+    return c;
+  }
+
   @override
   Future<void> open(Playable playable, {bool play = true}) async {
     if (_disposed) return;
@@ -456,8 +536,10 @@ class LunaExoPlayer implements Player {
     // 关键核心：在 Android TV 上，MediaCodec 硬件视频解码器通常仅支持单实例并发。
     // 切换集数或换源时，必须严格执行串行释放：立即卸载旧控制器并彻底 dispose，
     // 防止新旧两个 ExoPlayer 实例在底层同时竞争同一个硬件解码器导致底层崩溃或静默黑屏。
+    // 已预热的下一集控制器：先接管，再回收旧的，中间不出现空白画面。
+    final standbyController = _takeStandby(url);
     final old = _controller;
-    _controller = null;
+    _controller = standbyController;
     if (old != null) {
       if (_valueListener != null) {
         try {
@@ -565,7 +647,10 @@ class LunaExoPlayer implements Player {
     );
 
     VideoPlayerController c;
-    if (url.startsWith('/') || (uri != null && uri.scheme == 'file')) {
+    if (standbyController != null) {
+      c = standbyController;
+      DiaryService.add('[ExoPlayer] 接管已预热的下一集控制器，跳过初始化');
+    } else if (url.startsWith('/') || (uri != null && uri.scheme == 'file')) {
       final filePath = uri != null && uri.scheme == 'file'
           ? uri.toFilePath()
           : url;
@@ -589,7 +674,7 @@ class LunaExoPlayer implements Player {
       );
     }
 
-    try {
+    if (standbyController == null) try {
       DiaryService.add(
         '[ExoPlayer] c.initialize() 开始 (formatHint=$formatHint)...',
       );
@@ -1200,6 +1285,7 @@ class LunaExoPlayer implements Player {
 
   Future<void> _disposePlayer() async {
     _disposed = true;
+    await discardStandby();
     await stop();
     stream.dispose();
   }
