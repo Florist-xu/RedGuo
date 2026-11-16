@@ -126,6 +126,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   DateTime _castSeekedAt = DateTime(2000);
   double _castError = 0;
   DateTime _castHoldUntil = DateTime(2000);
+  DateTime _castSwitchedAt = DateTime(2000);
   double? _lanFirstPosition;
   String? _savedProgressKey;
   final _health = PlaybackHealth();
@@ -1303,11 +1304,13 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
       if (next < 0) throw StateError('接收端没有第 $episode 集');
       if (!_loading) {
+        // 自动连播时声音端换集瞬间会短暂上报「暂停」，跟随端保持播放，避免闪出控制按钮
+        _castSwitchedAt = DateTime.now();
         unawaited(
           _play(
             next,
             position: position.toDouble(),
-            playWhenReady: playing,
+            playWhenReady: playing || _playIntent,
             showControlsOnReady: false,
           ),
         );
@@ -1326,6 +1329,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     final state = _player.state;
     final current = state.position.inMilliseconds / 1000;
     final target = position.toDouble() + (playing ? transit * rate : 0);
+    if (!playing && _playIntent) {
+      final durationSeconds = state.duration.inMilliseconds / 1000;
+      final settling =
+          DateTime.now().difference(_castSwitchedAt) <
+          const Duration(seconds: 3);
+      final atEnd = durationSeconds > 0 && position >= durationSeconds - 1.5;
+      // 一集播完 / 刚换集时声音端的瞬时「暂停」不是用户操作，忽略
+      if (settling || atEnd) return {'state': 'settling'};
+    }
     _playIntent = playing;
     if (!playing) {
       if (state.playing) unawaited(_player.pause());
