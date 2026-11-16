@@ -201,15 +201,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (_fullscreen) await _rotate();
         _deskMiniRestore = await windowManager.getBounds();
         if (await windowManager.isMaximized()) await windowManager.unmaximize();
-        final ratio = _aspectRatio >= 1 ? _aspectRatio.clamp(1.0, 2.39) : 16 / 9;
         await windowManager.setTitleBarStyle(
           TitleBarStyle.hidden,
           windowButtonVisibility: false,
         );
-        await windowManager.setMinimumSize(const Size(160, 90));
+        await windowManager.setMinimumSize(const Size(90, 90));
         await windowManager.setAlwaysOnTop(true);
-        await windowManager.setAspectRatio(ratio);
-        await windowManager.setSize(Size(480, 480 / ratio));
+        await _fitDeskMini();
         await windowManager.setAlignment(Alignment.bottomRight);
         if (mounted) setState(() => _deskMini = true);
       } else {
@@ -218,6 +216,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     } catch (error) {
       _notice('小窗切换失败：$error');
     }
+  }
+
+  /// 小窗尺寸跟随画面方向：横屏视频宽 480，竖屏视频高 480（窗口比例等于视频比例）。
+  Future<void> _fitDeskMini() async {
+    final raw = _aspectRatio.isFinite && _aspectRatio > 0 ? _aspectRatio : 16 / 9;
+    final ratio = raw.clamp(0.4, 2.39).toDouble();
+    final size = ratio >= 1 ? Size(480, 480 / ratio) : Size(480 * ratio, 480);
+    await windowManager.setAspectRatio(ratio);
+    await windowManager.setSize(size);
   }
 
   Future<void> _restoreDeskMini() async {
@@ -459,9 +466,13 @@ class _PlayerScreenState extends State<PlayerScreen>
       _player.stream.videoParams.listen((parameters) {
         final size = videoDisplaySize(parameters);
         if (size != null && mounted && !_closed) {
+          final before = _aspectRatio;
           setState(() {
             _aspectRatio = size.width / size.height;
           });
+          if (_deskMini && (before >= 1) != (_aspectRatio >= 1)) {
+            unawaited(_fitDeskMini().catchError((_) {}));
+          }
           _scheduleSystemUi();
           _syncNativePictureInPictureConfig();
         }
