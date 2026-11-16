@@ -160,6 +160,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureRequested = false;
   bool _deskMini = false;
   double? _immersiveSeek;
+  bool _immersiveClean = false;
   StreamSubscription<void>? _routeSub;
   StreamSubscription<Map<String, dynamic>>? _remoteSub;
   Timer? _nowPlayingTimer;
@@ -3335,8 +3336,8 @@ class _PlayerScreenState extends State<PlayerScreen>
           ),
         ),
         IconButton(
-          tooltip: '更多设置',
-          onPressed: () => unawaited(_openPanel(PlayerMenuSection.settings)),
+          tooltip: '更多',
+          onPressed: () => unawaited(_showImmersiveMenu()),
           icon: const Icon(Icons.more_vert_rounded, color: Colors.white),
         ),
       ],
@@ -3482,10 +3483,12 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
         const SizedBox(width: 12),
         IconButton(
-          tooltip: '全屏',
-          onPressed: _rotate,
-          icon: const Icon(
-            Icons.fullscreen_rounded,
+          tooltip: _immersiveClean ? '显示信息' : '清屏',
+          onPressed: () => setState(() => _immersiveClean = !_immersiveClean),
+          icon: Icon(
+            _immersiveClean
+                ? Icons.fullscreen_exit_rounded
+                : Icons.fullscreen_rounded,
             color: Colors.white,
             size: 30,
           ),
@@ -3515,7 +3518,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                   fit: StackFit.expand,
                   children: [
                     const ColoredBox(color: Colors.black),
-                    _videoPane(context),
+                    _videoPane(context, immersive: true),
                     Positioned(
                       left: 0,
                       right: 0,
@@ -3539,19 +3542,26 @@ class _PlayerScreenState extends State<PlayerScreen>
                       right: 0,
                       bottom: 0,
                       child: DecoratedBox(
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [Color(0x00000000), Color(0xB3000000)],
-                          ),
+                        decoration: BoxDecoration(
+                          gradient: _immersiveClean
+                              ? null
+                              : const LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [
+                                    Color(0x00000000),
+                                    Color(0xB3000000),
+                                  ],
+                                ),
                         ),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const SizedBox(height: 28),
-                            _immersiveInfo(number),
-                            const SizedBox(height: 4),
+                            if (!_immersiveClean) ...[
+                              const SizedBox(height: 28),
+                              _immersiveInfo(number),
+                              const SizedBox(height: 4),
+                            ],
                             _immersiveProgress(),
                           ],
                         ),
@@ -3584,20 +3594,22 @@ class _PlayerScreenState extends State<PlayerScreen>
               child: SizedBox(
                 height: videoHeight,
                 width: double.infinity,
-                child: _videoPane(context),
+                child: _videoPane(context, immersive: true),
               ),
             ),
           ),
-          Center(
-            child: _immersivePill(
-              icon: Icons.screen_rotation_alt_rounded,
-              label: '全屏观看',
-              onTap: _rotate,
+          if (!_immersiveClean) ...[
+            Center(
+              child: _immersivePill(
+                icon: Icons.screen_rotation_alt_rounded,
+                label: '全屏观看',
+                onTap: _rotate,
+              ),
             ),
-          ),
-          const SizedBox(height: 14),
-          _immersiveInfo(number),
-          const SizedBox(height: 8),
+            const SizedBox(height: 14),
+            _immersiveInfo(number),
+            const SizedBox(height: 8),
+          ],
           _immersiveProgress(),
           _immersiveBottomBar(media),
         ],
@@ -3605,7 +3617,106 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  Widget _videoPane(BuildContext context, {double topPadding = 0.0}) {
+  Widget _immersiveTapLayer() {
+    final showPlay = !_playIntent && !_loading && _error == null;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _togglePlayback,
+      child: AnimatedOpacity(
+        opacity: showPlay ? 1 : 0,
+        duration: const Duration(milliseconds: 150),
+        child: Center(
+          child: Container(
+            width: 68,
+            height: 68,
+            decoration: const BoxDecoration(
+              color: Color(0x66000000),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.play_arrow_rounded,
+              color: Colors.white,
+              size: 46,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showImmersiveMenu() async {
+    if (_panelOpen || _closed) return;
+    final hongguo = widget.detail.drama.source == 'hongguo';
+    final items = <({IconData icon, String label, VoidCallback run})>[
+      (
+        icon: Icons.high_quality_rounded,
+        label: '清晰度',
+        run: () => unawaited(_openPanel(PlayerMenuSection.quality)),
+      ),
+      if (hongguo)
+        (
+          icon: Icons.subtitles_rounded,
+          label: _danmakuEnabled ? '关闭弹幕' : '开启弹幕',
+          run: () => unawaited(Future<void>.sync(_toggleDanmaku)),
+        ),
+      if (_canUsePictureInPicture)
+        (
+          icon: Icons.picture_in_picture_alt_rounded,
+          label: '小窗播放',
+          run: () => unawaited(_enterPictureInPicture()),
+        ),
+      if (LanController.current != null && widget.mediaId == null)
+        (
+          icon: Icons.cast_connected_rounded,
+          label: '推送 / 分屏播放',
+          run: () => unawaited(_pushToDevice()),
+        ),
+      (
+        icon: Icons.tune_rounded,
+        label: '更多设置',
+        run: () => unawaited(_openPanel(PlayerMenuSection.settings)),
+      ),
+    ];
+    setState(() => _panelOpen = true);
+    VoidCallback? chosen;
+    try {
+      chosen = await showModalBottomSheet<VoidCallback>(
+        context: context,
+        backgroundColor: const Color(0xFF20262B),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        builder: (context) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              for (final item in items)
+                ListTile(
+                  minTileHeight: 52,
+                  leading: Icon(item.icon, color: Colors.white70),
+                  title: Text(
+                    item.label,
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                  onTap: () => Navigator.pop(context, item.run),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _panelOpen = false);
+    }
+    chosen?.call();
+  }
+
+  Widget _videoPane(
+    BuildContext context, {
+    double topPadding = 0.0,
+    bool immersive = false,
+  }) {
     return PlayerViewportView(
       topPadding: topPadding,
       television: _television,
@@ -3644,7 +3755,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       repository: widget.repository,
       store: widget.store,
       videoBuilder: widget.videoBuilder,
-      controlsOverlay: widget.feed ? _feedControls() : null,
+      controlsOverlay: widget.feed
+          ? _feedControls()
+          : (immersive ? _immersiveTapLayer() : null),
       onTogglePlayback: _togglePlayback,
       onSeek: _seek,
       onSeekTo: _seekTo,
