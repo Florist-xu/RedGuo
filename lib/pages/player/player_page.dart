@@ -3544,10 +3544,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         child: Column(
           children: [
             Expanded(
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  bottom: Radius.circular(18),
-                ),
+              child: ClipRect(
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
@@ -3789,6 +3786,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       repository: widget.repository,
       store: widget.store,
       videoBuilder: widget.videoBuilder,
+      fit: immersive && _aspectRatio < 1 ? BoxFit.cover : BoxFit.contain,
       controlsOverlay: widget.feed
           ? _feedControls()
           : (immersive ? _immersiveTapLayer() : null),

@@ -64,6 +64,7 @@ class PlayerViewportView extends StatelessWidget {
     required this.store,
     this.videoBuilder,
     this.controlsOverlay,
+    this.fit = BoxFit.contain,
     this.audioOnlyTarget,
     required this.onTogglePlayback,
     required this.onSeek,
@@ -126,6 +127,7 @@ class PlayerViewportView extends StatelessWidget {
   final LocalStore store;
   final Widget Function(Widget child)? videoBuilder;
   final Widget? controlsOverlay;
+  final BoxFit fit;
   final String? audioOnlyTarget;
 
   final VoidCallback onTogglePlayback;
@@ -440,13 +442,13 @@ class PlayerViewportView extends StatelessWidget {
                     else if (player is LunaExoPlayer)
                       LunaExoVideoView(
                         player: player as LunaExoPlayer,
-                        fit: BoxFit.contain,
+                        fit: fit,
                         controls: (_) => layeredControls,
                       )
                     else if (videoController != null)
                       Video(
                         controller: videoController!,
-                        fit: BoxFit.contain,
+                        fit: fit,
                         controls: (_) => layeredControls,
                       ),
                     if (loading && !hideOverlayForPictureInPicture)
