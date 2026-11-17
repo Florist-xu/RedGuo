@@ -129,6 +129,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   DateTime _castHoldUntil = DateTime(2000);
   DateTime _castSwitchedAt = DateTime(2000);
   final _keepAlive = KeepAliveAudio();
+  // iOS：本机播放时切后台/锁屏，改为只解码声音继续播放（像音乐 App），回到前台恢复画面
+  bool _bgAudio = false;
   Timer? _keepAliveTimer;
   double? _lanFirstPosition;
   String? _savedProgressKey;
@@ -199,7 +201,10 @@ class _PlayerScreenState extends State<PlayerScreen>
           _pictureInPictureRequested);
   /// 前台，或本机正在作为分屏的声音端（锁屏后仍需自动下一集、续播与错误恢复）。
   bool get _active =>
-      _foreground || _castFollower || (LanController.current?.casting ?? false);
+      _foreground ||
+      _bgAudio ||
+      _castFollower ||
+      (LanController.current?.casting ?? false);
   bool get _deskMiniAvailable =>
       !_television &&
       !widget.feed &&
@@ -955,9 +960,31 @@ class _PlayerScreenState extends State<PlayerScreen>
     _syncPreload();
     _health.reset();
     if (!visible) _interactions.cancel();
+    final casting = _castFollower || (LanController.current?.casting ?? false);
+    final hiddenNow =
+        _lifecycleState == AppLifecycleState.paused ||
+        _lifecycleState == AppLifecycleState.hidden;
+    if (!visible &&
+        hiddenNow &&
+        !casting &&
+        !_bgAudio &&
+        Platform.isIOS &&
+        !widget.feed &&
+        _playIntent &&
+        !_loading &&
+        _error == null &&
+        _openedIndex == _index) {
+      _bgAudio = true;
+      DiaryService.add('[后台] 切到后台，改为仅播放声音继续播放');
+      unawaited(_setVideoDecode(false));
+    }
+    if (visible && _bgAudio) {
+      _bgAudio = false;
+      DiaryService.add('[后台] 回到前台，恢复画面');
+      unawaited(_setVideoDecode(true));
+    }
     // 分屏播放时，出声的一端锁屏/切后台也要继续播放并保持对齐
-    final keepAudio =
-        _castFollower || (LanController.current?.casting ?? false);
+    final keepAudio = casting || _bgAudio;
     if (pauseWhenHidden &&
         !visible &&
         !keepAudio &&
