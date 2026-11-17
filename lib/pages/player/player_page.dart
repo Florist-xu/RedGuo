@@ -969,6 +969,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         !casting &&
         !_bgAudio &&
         Platform.isIOS &&
+        _canUsePictureInPicture &&
         !widget.feed &&
         _playIntent &&
         !_loading &&
