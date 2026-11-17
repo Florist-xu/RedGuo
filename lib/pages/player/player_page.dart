@@ -71,6 +71,7 @@ class PlayerScreen extends StatefulWidget {
     this.feed = false,
     this.playbackQueue,
     this.onOpenDetail,
+    this.resumeCast = false,
   });
   final DramaDetail detail;
   final int initialIndex;
@@ -86,6 +87,8 @@ class PlayerScreen extends StatefulWidget {
   final bool feed;
   final PlaybackLeaseQueue? playbackQueue;
   final VoidCallback? onOpenDetail;
+  /// 换季重建页面后，自动把新一季重新分屏推送给原来的电脑。
+  final bool resumeCast;
   @visibleForTesting
   final Player Function()? playerFactory;
   @visibleForTesting
@@ -349,6 +352,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
     }
     _castFollower = widget.handoff?.intent.cast == true;
+    if (widget.resumeCast) unawaited(_resumeCastPush());
     if (_carryMini) {
       final restore = _carryMiniRestore;
       _carryMini = false;
@@ -465,6 +469,15 @@ class _PlayerScreenState extends State<PlayerScreen>
               !_panelOpen &&
               _index + 1 < widget.detail.episodes.length) {
             _play(_index + 1, showControlsOnReady: false);
+          } else if (_autoAdvance &&
+              !_castFollower &&
+              _active &&
+              !_panelOpen &&
+              !widget.feed &&
+              widget.mediaId == null &&
+              _nextSeasonDrama() != null) {
+            DiaryService.add('[换集] 本季播完，自动进入下一季');
+            unawaited(_switchSeason(_nextSeasonDrama()!));
           } else {
             setState(() => _playIntent = false);
             _interactions.cancel();
@@ -599,6 +612,77 @@ class _PlayerScreenState extends State<PlayerScreen>
     } catch (_) {}
   }
 
+  /// 当前季之后第一个可播放的季（用于整季播完自动接下一季）。
+  Drama? _nextSeasonDrama() {
+    final entries = _currentSeriesEntries;
+    final index = entries.indexWhere(
+      (entry) => entry.drama.id == widget.detail.drama.id,
+    );
+    if (index < 0) return null;
+    final season = entries[index].season;
+    HongguoSeriesEntry? best;
+    for (final entry in entries) {
+      if (entry.season > season &&
+          entry.playable &&
+          (best == null || entry.season < best.season)) {
+        best = entry;
+      }
+    }
+    return best?.drama;
+  }
+
+  /// 换季后新页面就绪，自动把画面重新推给电脑（小窗由电脑端沿用）。
+  Future<void> _resumeCastPush() async {
+    final link = LanController.current;
+    if (link == null) return;
+    for (var i = 0; i < 80; i++) {
+      if (_closed || !mounted) return;
+      if (!_loading && _error == null && _openedIndex == _index) break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (_closed || !mounted || _loading || _error != null) return;
+    final generation = _generation;
+    final index = _index;
+    bool current() =>
+        mounted &&
+        !_closed &&
+        generation == _generation &&
+        index == _index &&
+        widget.store.profileEpoch == _profileEpoch;
+    final videoHere = link.kind == 'computer';
+    try {
+      await link.pushPlayback(
+        snapshot: () => LanPlaybackIntent(
+          drama: widget.detail.drama,
+          episodeID: widget.detail.episodes[index].id,
+          episode: widget.detail.episodes[index].number,
+          position: _currentPosition,
+        ).asCast(audio: videoHere),
+        stillCurrent: current,
+        onAccepted: () async {
+          if (!current()) throw StateError('本机播放内容已变更');
+          _beginCastAudio(link);
+        },
+        confirmReplace: (_) async => true,
+      );
+      DiaryService.add('[分屏] 换季后已重新投屏');
+    } catch (error) {
+      DiaryService.add('[分屏] 换季后重新投屏失败: $error');
+    }
+  }
+
+  /// 分屏跟随端点上一集/下一集：转发给声音端，由它换集后同步回来。
+  void _stepEpisode(int target) {
+    if (target < 0 || target >= widget.detail.episodes.length) return;
+    if (_castFollower) {
+      _sendCastControl({
+        'action': 'episode',
+        'number': widget.detail.episodes[target].number,
+      });
+    }
+    unawaited(_play(target, showControlsOnReady: false));
+  }
+
   Future<void> _switchSeason(Drama seasonDrama) async {
     if (_closed || !mounted) return;
     if (seasonDrama.id == widget.detail.drama.id) return;
@@ -688,6 +772,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
       widget.onSeasonChanged?.call(nextDetail);
       if (widget.feed) return;
+      final recast = LanController.current?.casting ?? false;
+      if (recast) DiaryService.add('[分屏] 换季，稍后自动重新投屏到电脑');
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
           builder: (_) => PlayerScreen(
@@ -705,6 +791,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               ...widget.store.seriesDramasFor(nextDetail.drama),
             ], lockedEntries: _currentSeriesEntries),
             onSeasonChanged: widget.onSeasonChanged,
+            resumeCast: recast,
           ),
         ),
       );
@@ -1914,6 +2001,14 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (_playIntent) _togglePlayback();
       case 'play':
         if (!_playIntent) _togglePlayback();
+      case 'episode':
+        final number = body['number'];
+        final target = widget.detail.episodes.indexWhere(
+          (item) => item.number == number,
+        );
+        if (target >= 0 && target != _index) {
+          await _play(target, showControlsOnReady: false);
+        }
       case 'seek':
         final position = body['position'];
         if (position is num && position.isFinite && position >= 0) {
@@ -2937,7 +3032,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         (Object _) {},
       ),
     );
-    if (_deskMini && _castFollower) {
+    if (_deskMini && (_castFollower || widget.handoff != null)) {
       _deskMini = false;
       _carryMini = true;
       _carryMiniRestore = _deskMiniRestore;
@@ -3315,7 +3410,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                           _miniIcon(
                             Icons.skip_previous_rounded,
                             '上一集',
-                            _index > 0 ? () => _play(_index - 1) : null,
+                            _index > 0 ? () => _stepEpisode(_index - 1) : null,
                           ),
                           _miniIcon(
                             playing
@@ -3330,7 +3425,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                             Icons.skip_next_rounded,
                             '下一集',
                             _index + 1 < widget.detail.episodes.length
-                                ? () => _play(_index + 1)
+                                ? () => _stepEpisode(_index + 1)
                                 : null,
                           ),
                         ],
