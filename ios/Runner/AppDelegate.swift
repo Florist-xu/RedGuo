@@ -87,11 +87,19 @@ import MediaPlayer
     center.previousTrackCommand.isEnabled = (info["hasPrevious"] as? Bool) ?? false
     center.changePlaybackPositionCommand.isEnabled = true
     var now: [String: Any] = [:]
-    now[MPMediaItemPropertyTitle] = (info["title"] as? String) ?? ""
+    let rate = (info["rate"] as? Double) ?? 0
+    let title = (info["title"] as? String) ?? ""
+    now[MPMediaItemPropertyTitle] = title.isEmpty ? "Florist-TV" : title
+    now[MPMediaItemPropertyArtist] = "Florist-TV"
+    now[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.video.rawValue
+    now[MPNowPlayingInfoPropertyIsLiveStream] = false
     now[MPMediaItemPropertyPlaybackDuration] = (info["duration"] as? Double) ?? 0
     now[MPNowPlayingInfoPropertyElapsedPlaybackTime] = (info["position"] as? Double) ?? 0
-    now[MPNowPlayingInfoPropertyPlaybackRate] = (info["rate"] as? Double) ?? 0
+    now[MPNowPlayingInfoPropertyPlaybackRate] = rate
+    now[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
     MPNowPlayingInfoCenter.default().nowPlayingInfo = now
+    // 播放引擎不是 AVPlayer（分屏纯声音走 libmpv）时，必须显式告诉系统播放状态，锁屏卡片才会显示内容
+    MPNowPlayingInfoCenter.default().playbackState = rate > 0 ? .playing : .paused
   }
 
   private func clearNowPlaying() {

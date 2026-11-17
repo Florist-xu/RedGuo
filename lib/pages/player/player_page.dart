@@ -468,6 +468,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       _subscriptions.add(
         stream.listen((_) {
           _syncKeepAlive();
+          _publishNowPlaying();
           _syncDanmaku();
           _syncPreload();
           _acknowledgeHandoff();
@@ -1377,8 +1378,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     return {'state': 'playing', 'position': current, 'error': error};
   }
 
+  bool _nowPlayingLogged = false;
+
   void _publishNowPlaying() {
     if (_closed || widget.feed || _openedIndex != _index) return;
+    if (!_nowPlayingLogged) {
+      _nowPlayingLogged = true;
+      DiaryService.add('[锁屏] 首次发布播放信息: 第${widget.detail.episodes[_index].number}集');
+    }
     final episodes = widget.detail.episodes;
     unawaited(
       AppDevice.channel
@@ -1743,6 +1750,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
     }
     _applyLifecycleVisibility();
+    _publishNowPlaying();
   }
 
   void _queueRecovery({bool force = false}) {
