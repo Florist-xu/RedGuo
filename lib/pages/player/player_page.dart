@@ -171,6 +171,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
   bool _deskMini = false;
+  // 小窗跟随端被新的投屏页面替换（断线重连）时，把小窗状态交给新页面，窗口不还原。
+  static bool _carryMini = false;
+  static Rect? _carryMiniRestore;
   double? _immersiveSeek;
   bool _immersiveClean = false;
   StreamSubscription<void>? _routeSub;
@@ -346,6 +349,25 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
     }
     _castFollower = widget.handoff?.intent.cast == true;
+    if (_carryMini) {
+      final restore = _carryMiniRestore;
+      _carryMini = false;
+      _carryMiniRestore = null;
+      if (_castFollower && _deskMiniAvailable) {
+        _deskMini = true;
+        _deskMiniRestore = restore;
+        DiaryService.add('[分屏] 重新投屏，沿用电脑小窗');
+        unawaited(_fitDeskMini().catchError((Object _) {}));
+      } else if (restore != null) {
+        unawaited(
+          windowManager.setAspectRatio(0).then((_) async {
+            await windowManager.setAlwaysOnTop(false);
+            await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+            await windowManager.setBounds(restore);
+          }).catchError((Object _) {}),
+        );
+      }
+    }
     if (_castFollower) {
       if (widget.handoff?.intent.castAudio == true) {
         _castAudioTarget =
@@ -2915,7 +2937,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         (Object _) {},
       ),
     );
-    if (_deskMini) {
+    if (_deskMini && _castFollower) {
+      _deskMini = false;
+      _carryMini = true;
+      _carryMiniRestore = _deskMiniRestore;
+    } else if (_deskMini) {
       _deskMini = false;
       unawaited(
         windowManager.setAspectRatio(0).then((_) {
