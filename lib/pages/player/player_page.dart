@@ -17,6 +17,7 @@ import 'package:THLRedLook/utils/screen/app_orientation.dart';
 import 'package:THLRedLook/utils/theme/app_theme.dart';
 import 'package:THLRedLook/core/bridge/core_bridge.dart';
 import 'package:THLRedLook/utils/diary/diary_service.dart';
+import 'package:THLRedLook/core/player/keep_alive_audio.dart';
 import 'package:THLRedLook/core/player/luna_exo_player.dart';
 import 'package:THLRedLook/core/player/encrypted_playback.dart';
 import 'package:THLRedLook/core/player/pip_manager.dart';
@@ -127,6 +128,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   double _castError = 0;
   DateTime _castHoldUntil = DateTime(2000);
   DateTime _castSwitchedAt = DateTime(2000);
+  final _keepAlive = KeepAliveAudio();
+  Timer? _keepAliveTimer;
   double? _lanFirstPosition;
   String? _savedProgressKey;
   final _health = PlaybackHealth();
@@ -464,6 +467,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     ]) {
       _subscriptions.add(
         stream.listen((_) {
+          _syncKeepAlive();
           _syncDanmaku();
           _syncPreload();
           _acknowledgeHandoff();
@@ -1465,6 +1469,36 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  /// 声音端上报给电脑的倍速：以用户设定的倍速为准。
+  /// 后台暂停/恢复后播放引擎可能把倍速重置成 1.0，这里发现不一致就立刻纠正。
+  double _speedForCast() {
+    final wanted = _speed.toDouble();
+    if ((_player.state.rate - wanted).abs() > .01 && _openedIndex == _index) {
+      unawaited(_player.setRate(wanted).catchError((Object _) {}));
+    }
+    return wanted;
+  }
+
+  /// 手机作为分屏声音端被暂停时，循环静音保活，避免 iOS 挂起 App 导致电脑再点播放没声音、连接断开。
+  void _syncKeepAlive() {
+    if (_closed) return;
+    final need =
+        Platform.isIOS &&
+        _castAudioTarget != null &&
+        !_playIntent &&
+        !_player.state.playing;
+    if (need) {
+      _keepAliveTimer ??= Timer(const Duration(milliseconds: 1200), () {
+        _keepAliveTimer = null;
+        if (!_closed) unawaited(_keepAlive.start());
+      });
+    } else {
+      _keepAliveTimer?.cancel();
+      _keepAliveTimer = null;
+      if (_keepAlive.running) unawaited(_keepAlive.stop());
+    }
+  }
+
   void _beginCastAudio(LanController link) {
     final peer = link.connection?.peer.name ?? '电脑';
     final videoHere = link.kind == 'computer';
@@ -1479,7 +1513,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         episode: widget.detail.episodes[_index].number,
         position: _currentPosition,
         playing: _player.state.playing && _playIntent,
-        rate: _player.state.rate,
+        rate: _speedForCast(),
       ),
       onControl: _applyCastControl,
       onEnded: () {
@@ -1489,6 +1523,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           unawaited(_setVideoDecode(true));
         }
         if (mounted && !_closed) setState(() => _castAudioTarget = null);
+        _syncKeepAlive();
       },
     );
   }
@@ -2785,6 +2820,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       PipManager.instance.retainPlaybackResource(_encryptedPlayback.close);
     }
     _closed = true;
+    _keepAliveTimer?.cancel();
+    unawaited(_keepAlive.dispose());
     unawaited(_dropStandby(keepPlayer: true));
     _syncNativePictureInPictureConfig(force: true);
     unawaited(_player.pause().catchError((Object _) {}));
