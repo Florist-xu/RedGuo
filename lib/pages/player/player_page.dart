@@ -177,6 +177,21 @@ class _PlayerScreenState extends State<PlayerScreen>
   // 小窗跟随端被新的投屏页面替换（断线重连）时，把小窗状态交给新页面，窗口不还原。
   static bool _carryMini = false;
   static Rect? _carryMiniRestore;
+  static Timer? _carryMiniTimer;
+  static _PlayerScreenState? _miniOwner;
+  bool _miniHandedOver = false;
+
+  static Future<void> _restoreWindowFrom(Rect? bounds) async {
+    try {
+      await windowManager.setAspectRatio(0);
+      await windowManager.setAlwaysOnTop(false);
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      await windowManager.setMinimumSize(
+        Platform.isMacOS ? const Size(960, 540) : const Size(0, 0),
+      );
+      if (bounds != null) await windowManager.setBounds(bounds);
+    } catch (_) {}
+  }
   double? _immersiveSeek;
   bool _immersiveClean = false;
   StreamSubscription<void>? _routeSub;
@@ -230,6 +245,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         await windowManager.setAlwaysOnTop(true);
         await _fitDeskMini();
         await windowManager.setAlignment(Alignment.bottomRight);
+        _miniOwner = this;
         if (mounted) setState(() => _deskMini = true);
       } else {
         await _restoreDeskMini();
@@ -249,6 +265,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<void> _restoreDeskMini() async {
+    if (_miniOwner == this) _miniOwner = null;
     final bounds = _deskMiniRestore;
     _deskMiniRestore = null;
     await windowManager.setAspectRatio(0);
@@ -353,13 +370,28 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     _castFollower = widget.handoff?.intent.cast == true;
     if (widget.resumeCast) unawaited(_resumeCastPush());
-    if (_carryMini) {
+    final miniOwner = _miniOwner;
+    if (_castFollower &&
+        _deskMiniAvailable &&
+        miniOwner != null &&
+        miniOwner != this &&
+        miniOwner._deskMini) {
+      // 新页面在旧页面销毁前就已创建：直接从旧页面接手小窗
+      _deskMini = true;
+      _deskMiniRestore = miniOwner._deskMiniRestore;
+      miniOwner._miniHandedOver = true;
+      _miniOwner = this;
+      DiaryService.add('[分屏] 重新投屏，沿用电脑小窗');
+      unawaited(_fitDeskMini().catchError((Object _) {}));
+    } else if (_carryMini) {
       final restore = _carryMiniRestore;
       _carryMini = false;
       _carryMiniRestore = null;
+      _carryMiniTimer?.cancel();
       if (_castFollower && _deskMiniAvailable) {
         _deskMini = true;
         _deskMiniRestore = restore;
+        _miniOwner = this;
         DiaryService.add('[分屏] 重新投屏，沿用电脑小窗');
         unawaited(_fitDeskMini().catchError((Object _) {}));
       } else if (restore != null) {
@@ -3032,10 +3064,22 @@ class _PlayerScreenState extends State<PlayerScreen>
         (Object _) {},
       ),
     );
-    if (_deskMini && (_castFollower || widget.handoff != null)) {
+    if (_miniOwner == this) _miniOwner = null;
+    if (_deskMini && _miniHandedOver) {
+      _deskMini = false;
+    } else if (_deskMini && (_castFollower || widget.handoff != null)) {
       _deskMini = false;
       _carryMini = true;
-      _carryMiniRestore = _deskMiniRestore;
+      final carried = _deskMiniRestore;
+      _carryMiniRestore = carried;
+      _carryMiniTimer?.cancel();
+      // 3 秒内没有新的投屏页面接手，就把窗口还原，避免留下一个小窗口里的首页
+      _carryMiniTimer = Timer(const Duration(seconds: 3), () {
+        if (!_carryMini) return;
+        _carryMini = false;
+        _carryMiniRestore = null;
+        unawaited(_restoreWindowFrom(carried));
+      });
     } else if (_deskMini) {
       _deskMini = false;
       unawaited(
