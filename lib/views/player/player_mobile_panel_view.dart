@@ -283,64 +283,12 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
   Widget _buildSeriesBar() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final currentId = widget.detail.drama.id;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-      decoration: BoxDecoration(
-        color: isDark ? AppColors.darkSurfaceHigh : AppColors.lightSurfaceHigh,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.layers_rounded,
-                size: 14,
-                color: AppColors.hongguoRed,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                '系列多季',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: isDark
-                      ? AppColors.textPrimaryDark
-                      : AppColors.textPrimaryLight,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  color: AppColors.accentTrack35,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '共 ${widget.seriesEntries.length} 季',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.hongguoRed,
-                  ),
-                ),
-              ),
-              const Spacer(),
-              Text(
-                '点击快速切季',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  color: isDark
-                      ? AppColors.textTertiaryDark
-                      : AppColors.textTertiaryLight,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
@@ -359,11 +307,11 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                                     widget.onSeasonSelected?.call(entry.drama),
                           borderRadius: BorderRadius.circular(8),
                           child: Container(
-                            constraints: const BoxConstraints(minHeight: 36),
+                            constraints: const BoxConstraints(minHeight: 30),
                             alignment: Alignment.center,
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 6,
+                              horizontal: 12,
+                              vertical: 4,
                             ),
                             decoration: BoxDecoration(
                               color: isCurrent

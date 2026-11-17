@@ -3550,7 +3550,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Widget _immersiveProgress() => SizedBox(
-    height: 20,
+    height: 24,
     child: StreamBuilder<Duration>(
       stream: _player.stream.position,
       initialData: _player.state.position,
@@ -3561,12 +3561,12 @@ class _PlayerScreenState extends State<PlayerScreen>
             .toDouble();
         return SliderTheme(
           data: SliderTheme.of(context).copyWith(
-            trackHeight: _immersiveSeek != null ? 3 : 1.5,
+            trackHeight: _immersiveSeek != null ? 3 : 1,
             activeTrackColor: Colors.white.withValues(
-              alpha: _immersiveSeek != null ? .95 : .55,
+              alpha: _immersiveSeek != null ? .95 : .22,
             ),
             inactiveTrackColor: Colors.white.withValues(
-              alpha: _immersiveSeek != null ? .3 : .12,
+              alpha: _immersiveSeek != null ? .3 : .05,
             ),
             thumbColor: Colors.white,
             thumbShape: _immersiveSeek != null
@@ -3593,9 +3593,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   Widget _immersiveBottomBar(MediaQueryData media) => Padding(
     padding: EdgeInsets.fromLTRB(
       16,
-      8,
+      4,
       16,
-      media.padding.bottom > 12 ? media.padding.bottom : 12.0,
+      media.padding.bottom > 8 ? media.padding.bottom : 8.0,
     ),
     child: Row(
       children: [
@@ -3608,8 +3608,8 @@ class _PlayerScreenState extends State<PlayerScreen>
               onTap: () => unawaited(_openPanel(PlayerMenuSection.episodes)),
               child: Padding(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 14,
+                  horizontal: 14,
+                  vertical: 9,
                 ),
                 child: Row(
                   children: [
@@ -3618,13 +3618,14 @@ class _PlayerScreenState extends State<PlayerScreen>
                         '选集 · 全${widget.detail.episodes.length}集',
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 17,
+                          fontSize: 14.5,
                         ),
                       ),
                     ),
                     const Icon(
                       Icons.keyboard_arrow_up_rounded,
                       color: Colors.white70,
+                      size: 20,
                     ),
                   ],
                 ),
@@ -3641,7 +3642,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ? Icons.fullscreen_exit_rounded
                 : Icons.fullscreen_rounded,
             color: Colors.white,
-            size: 30,
+            size: 26,
           ),
         ),
       ],
@@ -3746,18 +3747,28 @@ class _PlayerScreenState extends State<PlayerScreen>
               ),
             ),
           ),
-          if (!_immersiveClean) ...[
-            Center(
-              child: _immersivePill(
-                icon: Icons.screen_rotation_alt_rounded,
-                label: '全屏观看',
-                onTap: _rotate,
-              ),
+          // 清屏时只隐藏、不移除，保持占位，避免视频位置跳动
+          Visibility(
+            visible: !_immersiveClean,
+            maintainSize: true,
+            maintainAnimation: true,
+            maintainState: true,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: _immersivePill(
+                    icon: Icons.screen_rotation_alt_rounded,
+                    label: '全屏观看',
+                    onTap: _rotate,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                _immersiveInfo(number),
+                const SizedBox(height: 8),
+              ],
             ),
-            const SizedBox(height: 14),
-            _immersiveInfo(number),
-            const SizedBox(height: 8),
-          ],
+          ),
           _immersiveProgress(),
           _immersiveBottomBar(media),
         ],
