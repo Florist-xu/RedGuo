@@ -1105,21 +1105,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final hiddenNow =
         _lifecycleState == AppLifecycleState.paused ||
         _lifecycleState == AppLifecycleState.hidden;
-    if (!visible &&
-        hiddenNow &&
-        !casting &&
-        !_bgAudio &&
-        Platform.isIOS &&
-        _canUsePictureInPicture &&
-        !widget.feed &&
-        _playIntent &&
-        !_loading &&
-        _error == null &&
-        _openedIndex == _index) {
-      _bgAudio = true;
-      DiaryService.add('[后台] 切到后台，改为仅播放声音继续播放');
-      unawaited(_setVideoDecode(false));
-    }
+    // 非小窗、非分屏时，锁屏/切后台一律暂停（不再改为仅播放声音）
     if (visible && _bgAudio) {
       _bgAudio = false;
       DiaryService.add('[后台] 回到前台，恢复画面');
