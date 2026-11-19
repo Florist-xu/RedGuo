@@ -307,7 +307,7 @@ class _AccountScreenState extends State<AccountScreen> {
             builder: (context, constraints) {
               final wide = constraints.maxWidth >= 600;
               final tabs = [
-                for (final value in [false, true])
+                for (final value in [true, false])
                   Padding(
                     padding: const EdgeInsets.all(8),
                     child: TextButton.icon(

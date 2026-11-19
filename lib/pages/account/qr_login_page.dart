@@ -186,7 +186,7 @@ class _HongguoQrLoginScreenState extends State<HongguoQrLoginScreen>
             content: Text(
               expired
                   ? '二维码已保存，但已过期，请刷新后重新保存'
-                  : '已保存，请立即打开红果 App → 扫一扫 → 相册，确认后回到糖葫芦 Haw',
+                  : '已保存，请立即打开红果 App → 扫一扫 → 相册，确认后回到Florist-TV',
             ),
           ),
         );

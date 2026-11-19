@@ -72,7 +72,7 @@ class AccountPairingReceiver extends ChangeNotifier {
       expiresAt: DateTime.now().add(const Duration(seconds: 120)),
       key: accountRandom(32),
     );
-    message = '使用手机糖葫芦 Haw 的“扫一扫登录其他设备”扫描';
+    message = '使用手机Florist-TV 的“扫一扫登录其他设备”扫描';
     _expiry = Timer(const Duration(seconds: 120), () {
       message = '配对码已过期，请重新生成';
       stop();

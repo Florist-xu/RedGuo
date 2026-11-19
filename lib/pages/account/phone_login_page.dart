@@ -190,7 +190,7 @@ class _HongguoPhoneLoginScreenState extends State<HongguoPhoneLoginScreen> {
                   child: Text(busy ? '正在处理' : '登录'),
                 ),
                 const SizedBox(height: 12),
-                const Text('验证码仅由你点击后发送。糖葫芦 Haw 不保存验证码。'),
+                const Text('验证码仅由你点击后发送。Florist-TV 不保存验证码。'),
               ],
             ),
           ),

@@ -10,12 +10,14 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'package:THLRedLook/core/player/audio_route.dart';
 import 'package:THLRedLook/utils/theme/app_colors.dart';
 import 'package:THLRedLook/utils/screen/app_layout.dart';
 import 'package:THLRedLook/utils/screen/app_orientation.dart';
 import 'package:THLRedLook/utils/theme/app_theme.dart';
 import 'package:THLRedLook/core/bridge/core_bridge.dart';
 import 'package:THLRedLook/utils/diary/diary_service.dart';
+import 'package:THLRedLook/core/player/keep_alive_audio.dart';
 import 'package:THLRedLook/core/player/luna_exo_player.dart';
 import 'package:THLRedLook/core/player/encrypted_playback.dart';
 import 'package:THLRedLook/core/player/pip_manager.dart';
@@ -69,6 +71,7 @@ class PlayerScreen extends StatefulWidget {
     this.feed = false,
     this.playbackQueue,
     this.onOpenDetail,
+    this.resumeCast = false,
   });
   final DramaDetail detail;
   final int initialIndex;
@@ -84,6 +87,8 @@ class PlayerScreen extends StatefulWidget {
   final bool feed;
   final PlaybackLeaseQueue? playbackQueue;
   final VoidCallback? onOpenDetail;
+  /// 换季重建页面后，自动把新一季重新分屏推送给原来的电脑。
+  final bool resumeCast;
   @visibleForTesting
   final Player Function()? playerFactory;
   @visibleForTesting
@@ -111,9 +116,25 @@ class _PlayerScreenState extends State<PlayerScreen>
   final _menuRevision = ValueNotifier<int>(0);
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final _recovery = PlaybackRecovery();
-  final _encryptedPlayback = EncryptedPlayback();
+  var _encryptedPlayback = EncryptedPlayback();
+  // 下一集备用解密流 + 已预热的原生控制器（仅 iOS）
+  EncryptedPlayback? _standbyEncrypted;
+  PlaybackPlan? _standbyPlan;
+  String? _standbyRawUrl;
+  bool _standbyBusy = false;
+  int _standbyTag = 0;
   Object _lanIdentity = Object();
   bool _handoffOwned = true;
+  bool _castFollower = false;
+  String? _castAudioTarget;
+  DateTime _castSeekedAt = DateTime(2000);
+  double _castError = 0;
+  DateTime _castHoldUntil = DateTime(2000);
+  DateTime _castSwitchedAt = DateTime(2000);
+  final _keepAlive = KeepAliveAudio();
+  // iOS：本机播放时切后台/锁屏，改为只解码声音继续播放（像音乐 App），回到前台恢复画面
+  bool _bgAudio = false;
+  Timer? _keepAliveTimer;
   double? _lanFirstPosition;
   String? _savedProgressKey;
   final _health = PlaybackHealth();
@@ -152,6 +173,33 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureSupported = false;
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
+  bool _deskMini = false;
+  // 小窗跟随端被新的投屏页面替换（断线重连）时，把小窗状态交给新页面，窗口不还原。
+  static bool _carryMini = false;
+  static Rect? _carryMiniRestore;
+  static Timer? _carryMiniTimer;
+  static _PlayerScreenState? _miniOwner;
+  bool _miniHandedOver = false;
+
+  static Future<void> _restoreWindowFrom(Rect? bounds) async {
+    try {
+      await windowManager.setAspectRatio(0);
+      await windowManager.setAlwaysOnTop(false);
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      await windowManager.setMinimumSize(
+        Platform.isMacOS ? const Size(960, 540) : const Size(0, 0),
+      );
+      if (bounds != null) await windowManager.setBounds(bounds);
+    } catch (_) {}
+  }
+  double? _immersiveSeek;
+  bool _immersiveClean = false;
+  StreamSubscription<void>? _routeSub;
+  StreamSubscription<Map<String, dynamic>>? _remoteSub;
+  Timer? _nowPlayingTimer;
+  bool _deskMiniHover = false;
+  double? _deskMiniSeek;
+  Rect? _deskMiniRestore;
   bool _pictureInPictureHandlerInstalled = false;
   bool _lastNativePipAutoEnter = false;
   int _lastNativePipWidth = 0;
@@ -172,6 +220,64 @@ class _PlayerScreenState extends State<PlayerScreen>
       _pictureInPictureActive ||
       (defaultTargetPlatform == TargetPlatform.android &&
           _pictureInPictureRequested);
+  /// 前台，或本机正在作为分屏的声音端（锁屏后仍需自动下一集、续播与错误恢复）。
+  bool get _active =>
+      _foreground ||
+      _bgAudio ||
+      _castFollower ||
+      (LanController.current?.casting ?? false);
+  bool get _deskMiniAvailable =>
+      !_television &&
+      !widget.feed &&
+      (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  Future<void> _toggleDeskMini() async {
+    if (_closed || !_deskMiniAvailable) return;
+    try {
+      if (!_deskMini) {
+        if (_fullscreen) await _rotate();
+        _deskMiniRestore = await windowManager.getBounds();
+        if (await windowManager.isMaximized()) await windowManager.unmaximize();
+        await windowManager.setTitleBarStyle(
+          TitleBarStyle.hidden,
+          windowButtonVisibility: false,
+        );
+        await windowManager.setMinimumSize(const Size(90, 90));
+        await windowManager.setAlwaysOnTop(true);
+        await _fitDeskMini();
+        await windowManager.setAlignment(Alignment.bottomRight);
+        _miniOwner = this;
+        if (mounted) setState(() => _deskMini = true);
+      } else {
+        await _restoreDeskMini();
+      }
+    } catch (error) {
+      _notice('小窗切换失败：$error');
+    }
+  }
+
+  /// 小窗尺寸跟随画面方向：横屏视频宽 480，竖屏视频高 480（窗口比例等于视频比例）。
+  Future<void> _fitDeskMini() async {
+    final raw = _aspectRatio.isFinite && _aspectRatio > 0 ? _aspectRatio : 16 / 9;
+    final ratio = raw.clamp(0.4, 2.39).toDouble();
+    final size = ratio >= 1 ? Size(480, 480 / ratio) : Size(480 * ratio, 480);
+    await windowManager.setAspectRatio(ratio);
+    await windowManager.setSize(size);
+  }
+
+  Future<void> _restoreDeskMini() async {
+    if (_miniOwner == this) _miniOwner = null;
+    final bounds = _deskMiniRestore;
+    _deskMiniRestore = null;
+    await windowManager.setAspectRatio(0);
+    await windowManager.setAlwaysOnTop(false);
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await windowManager.setMinimumSize(
+      Platform.isMacOS ? const Size(960, 540) : const Size(0, 0),
+    );
+    if (bounds != null) await windowManager.setBounds(bounds);
+    if (mounted && _deskMini) setState(() => _deskMini = false);
+  }
+
   bool get _canUsePictureInPicture =>
       !_television &&
       widget.store.playbackPreferences.pictureInPicture &&
@@ -225,6 +331,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _preloadEnabled = preferences.preload;
     _loader = PlaybackLoader(widget.repository);
     _preloader = PlaybackPreloader(widget.repository);
+    _preloader.addListener(_warmStandby);
     _danmaku = DanmakuController(widget.repository)
       ..setEnabled(_danmakuEnabled);
     widget.store.addListener(_accessChanged);
@@ -242,6 +349,72 @@ class _PlayerScreenState extends State<PlayerScreen>
               ));
     if (_player is LunaExoPlayer) {
       _player.setDecoderMode(preferences.decoderMode);
+    }
+    _routeSub = AudioRouteEvents.headphonesUnplugged.listen(
+      (_) => _onHeadphonesUnplugged(),
+    );
+    _player.stream.playing.listen((playing) {
+      if (_castFollower || (LanController.current?.casting ?? false)) {
+        DiaryService.add(
+          '[分屏] 播放器状态 playing=$playing 生命周期=${_lifecycleState.name} '
+          '位置=${_currentPosition.toStringAsFixed(1)}s',
+        );
+      }
+    });
+    if (!widget.feed && defaultTargetPlatform == TargetPlatform.iOS) {
+      _remoteSub = AudioRouteEvents.remoteCommands.listen(_onRemoteCommand);
+      _nowPlayingTimer = Timer.periodic(
+        const Duration(seconds: 3),
+        (_) => _publishNowPlaying(),
+      );
+    }
+    _castFollower = widget.handoff?.intent.cast == true;
+    if (widget.resumeCast) unawaited(_resumeCastPush());
+    final miniOwner = _miniOwner;
+    if (_castFollower &&
+        _deskMiniAvailable &&
+        miniOwner != null &&
+        miniOwner != this &&
+        miniOwner._deskMini) {
+      // 新页面在旧页面销毁前就已创建：直接从旧页面接手小窗
+      _deskMini = true;
+      _deskMiniRestore = miniOwner._deskMiniRestore;
+      miniOwner._miniHandedOver = true;
+      _miniOwner = this;
+      DiaryService.add('[分屏] 重新投屏，沿用电脑小窗');
+      unawaited(_fitDeskMini().catchError((Object _) {}));
+    } else if (_carryMini) {
+      final restore = _carryMiniRestore;
+      _carryMini = false;
+      _carryMiniRestore = null;
+      _carryMiniTimer?.cancel();
+      if (_castFollower && _deskMiniAvailable) {
+        _deskMini = true;
+        _deskMiniRestore = restore;
+        _miniOwner = this;
+        DiaryService.add('[分屏] 重新投屏，沿用电脑小窗');
+        unawaited(_fitDeskMini().catchError((Object _) {}));
+      } else if (restore != null) {
+        unawaited(
+          windowManager.setAspectRatio(0).then((_) async {
+            await windowManager.setAlwaysOnTop(false);
+            await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+            await windowManager.setBounds(restore);
+          }).catchError((Object _) {}),
+        );
+      }
+    }
+    if (_castFollower) {
+      if (widget.handoff?.intent.castAudio == true) {
+        _castAudioTarget =
+            LanController.current?.connection?.peer.name ?? '电脑';
+        unawaited(_setVideoDecode(false));
+      } else {
+        unawaited(_player.setVolume(0));
+      }
+      LanController.current?.setCastReceiver(
+        LanCastReceiver(apply: _applyCastSync, stop: _stopCastFollower),
+      );
     }
     _video = widget.videoBuilder == null && _player is! LunaExoPlayer
         ? VideoController(
@@ -323,10 +496,20 @@ class _PlayerScreenState extends State<PlayerScreen>
               currentPosition < duration - const Duration(seconds: 2)) {
             _queueRecovery();
           } else if (_autoAdvance &&
-              _foreground &&
+              !_castFollower &&
+              _active &&
               !_panelOpen &&
               _index + 1 < widget.detail.episodes.length) {
             _play(_index + 1, showControlsOnReady: false);
+          } else if (_autoAdvance &&
+              !_castFollower &&
+              _active &&
+              !_panelOpen &&
+              !widget.feed &&
+              widget.mediaId == null &&
+              _nextSeasonDrama() != null) {
+            DiaryService.add('[换集] 本季播完，自动进入下一季');
+            unawaited(_switchSeason(_nextSeasonDrama()!));
           } else {
             setState(() => _playIntent = false);
             _interactions.cancel();
@@ -356,6 +539,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     ]) {
       _subscriptions.add(
         stream.listen((_) {
+          _syncKeepAlive();
+          _publishNowPlaying();
           _syncDanmaku();
           _syncPreload();
           _acknowledgeHandoff();
@@ -366,9 +551,13 @@ class _PlayerScreenState extends State<PlayerScreen>
       _player.stream.videoParams.listen((parameters) {
         final size = videoDisplaySize(parameters);
         if (size != null && mounted && !_closed) {
+          final before = _aspectRatio;
           setState(() {
             _aspectRatio = size.width / size.height;
           });
+          if (_deskMini && (before >= 1) != (_aspectRatio >= 1)) {
+            unawaited(_fitDeskMini().catchError((_) {}));
+          }
           _scheduleSystemUi();
           _syncNativePictureInPictureConfig();
         }
@@ -453,6 +642,77 @@ class _PlayerScreenState extends State<PlayerScreen>
         });
       }
     } catch (_) {}
+  }
+
+  /// 当前季之后第一个可播放的季（用于整季播完自动接下一季）。
+  Drama? _nextSeasonDrama() {
+    final entries = _currentSeriesEntries;
+    final index = entries.indexWhere(
+      (entry) => entry.drama.id == widget.detail.drama.id,
+    );
+    if (index < 0) return null;
+    final season = entries[index].season;
+    HongguoSeriesEntry? best;
+    for (final entry in entries) {
+      if (entry.season > season &&
+          entry.playable &&
+          (best == null || entry.season < best.season)) {
+        best = entry;
+      }
+    }
+    return best?.drama;
+  }
+
+  /// 换季后新页面就绪，自动把画面重新推给电脑（小窗由电脑端沿用）。
+  Future<void> _resumeCastPush() async {
+    final link = LanController.current;
+    if (link == null) return;
+    for (var i = 0; i < 80; i++) {
+      if (_closed || !mounted) return;
+      if (!_loading && _error == null && _openedIndex == _index) break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (_closed || !mounted || _loading || _error != null) return;
+    final generation = _generation;
+    final index = _index;
+    bool current() =>
+        mounted &&
+        !_closed &&
+        generation == _generation &&
+        index == _index &&
+        widget.store.profileEpoch == _profileEpoch;
+    final videoHere = link.kind == 'computer';
+    try {
+      await link.pushPlayback(
+        snapshot: () => LanPlaybackIntent(
+          drama: widget.detail.drama,
+          episodeID: widget.detail.episodes[index].id,
+          episode: widget.detail.episodes[index].number,
+          position: _currentPosition,
+        ).asCast(audio: videoHere),
+        stillCurrent: current,
+        onAccepted: () async {
+          if (!current()) throw StateError('本机播放内容已变更');
+          _beginCastAudio(link);
+        },
+        confirmReplace: (_) async => true,
+      );
+      DiaryService.add('[分屏] 换季后已重新投屏');
+    } catch (error) {
+      DiaryService.add('[分屏] 换季后重新投屏失败: $error');
+    }
+  }
+
+  /// 分屏跟随端点上一集/下一集：转发给声音端，由它换集后同步回来。
+  void _stepEpisode(int target) {
+    if (target < 0 || target >= widget.detail.episodes.length) return;
+    if (_castFollower) {
+      _sendCastControl({
+        'action': 'episode',
+        'number': widget.detail.episodes[target].number,
+      });
+    }
+    unawaited(_play(target, showControlsOnReady: false));
   }
 
   Future<void> _switchSeason(Drama seasonDrama) async {
@@ -544,6 +804,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
       widget.onSeasonChanged?.call(nextDetail);
       if (widget.feed) return;
+      final recast = LanController.current?.casting ?? false;
+      if (recast) DiaryService.add('[分屏] 换季，稍后自动重新投屏到电脑');
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
           builder: (_) => PlayerScreen(
@@ -561,6 +823,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               ...widget.store.seriesDramasFor(nextDetail.drama),
             ], lockedEntries: _currentSeriesEntries),
             onSeasonChanged: widget.onSeasonChanged,
+            resumeCast: recast,
           ),
         ),
       );
@@ -838,8 +1101,21 @@ class _PlayerScreenState extends State<PlayerScreen>
     _syncPreload();
     _health.reset();
     if (!visible) _interactions.cancel();
+    final casting = _castFollower || (LanController.current?.casting ?? false);
+    final hiddenNow =
+        _lifecycleState == AppLifecycleState.paused ||
+        _lifecycleState == AppLifecycleState.hidden;
+    // 非小窗、非分屏时，锁屏/切后台一律暂停（不再改为仅播放声音）
+    if (visible && _bgAudio) {
+      _bgAudio = false;
+      DiaryService.add('[后台] 回到前台，恢复画面');
+      unawaited(_setVideoDecode(true));
+    }
+    // 分屏播放时，出声的一端锁屏/切后台也要继续播放并保持对齐
+    final keepAudio = casting || _bgAudio;
     if (pauseWhenHidden &&
         !visible &&
+        !keepAudio &&
         (_lifecycleState == AppLifecycleState.paused ||
             _lifecycleState == AppLifecycleState.hidden)) {
       if (!_lifecyclePaused) {
@@ -1156,6 +1432,264 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
+  Map<String, dynamic> _applyCastSync(Map<String, dynamic> body, int recvAtMs) {
+    final episode = body['episode'];
+    final position = body['position'];
+    final playing = body['playing'];
+    final rate = body['rate'];
+    final sentAt = body['sentAt'];
+    final offset = body['offsetMs'];
+    if (episode is! int ||
+        position is! num ||
+        !position.isFinite ||
+        position < 0 ||
+        position > 604800 ||
+        playing is! bool ||
+        rate is! num ||
+        !(rate > 0 && rate <= 8) ||
+        sentAt is! num ||
+        offset is! num) {
+      throw const FormatException('分屏同步数据无效');
+    }
+    if (_closed || widget.store.profileEpoch != _profileEpoch) {
+      throw StateError('接收端播放已关闭');
+    }
+    // 本机刚操作过播放/暂停/拖动，等声音端处理完再跟随，避免被旧状态拉回
+    if (DateTime.now().isBefore(_castHoldUntil)) {
+      return {'state': 'hold'};
+    }
+    if (episode != widget.detail.episodes[_index].number) {
+      final next = widget.detail.episodes.indexWhere(
+        (item) => item.number == episode,
+      );
+      if (next < 0) throw StateError('接收端没有第 $episode 集');
+      if (!_loading) {
+        // 自动连播时声音端换集瞬间会短暂上报「暂停」，跟随端保持播放，避免闪出控制按钮
+        _castSwitchedAt = DateTime.now();
+        unawaited(
+          _play(
+            next,
+            position: position.toDouble(),
+            playWhenReady: playing || _playIntent,
+            showControlsOnReady: false,
+          ),
+        );
+      }
+      return {'state': 'switching'};
+    }
+    if (_loading || _error != null || _openedIndex != _index) {
+      return {'state': 'loading'};
+    }
+    final transit = offset == 0
+        ? 0.05
+        : ((recvAtMs - sentAt.toDouble() - offset.toDouble()) / 1000).clamp(
+            0.0,
+            2.0,
+          );
+    final state = _player.state;
+    final current = state.position.inMilliseconds / 1000;
+    final target = position.toDouble() + (playing ? transit * rate : 0);
+    if (!playing && _playIntent) {
+      final durationSeconds = state.duration.inMilliseconds / 1000;
+      final settling =
+          DateTime.now().difference(_castSwitchedAt) <
+          const Duration(seconds: 3);
+      final atEnd = durationSeconds > 0 && position >= durationSeconds - 1.5;
+      // 一集播完 / 刚换集时声音端的瞬时「暂停」不是用户操作，忽略
+      if (settling || atEnd) return {'state': 'settling'};
+    }
+    _playIntent = playing;
+    if (!playing) {
+      if (state.playing) unawaited(_player.pause());
+      if ((current - target).abs() > .3) {
+        unawaited(_player.seek(Duration(milliseconds: (target * 1000).round())));
+      }
+      return {'state': 'paused', 'position': current};
+    }
+    if (!state.playing) unawaited(_player.play());
+    final raw = target - current;
+    _castError = (raw - _castError).abs() > 1.0
+        ? raw
+        : _castError * .6 + raw * .4;
+    final error = _castError;
+    final now = DateTime.now();
+    var wanted = rate.toDouble();
+    if (error.abs() > 1.5) {
+      if (now.difference(_castSeekedAt) > const Duration(seconds: 4)) {
+        _castSeekedAt = now;
+        _castError = 0;
+        unawaited(
+          _player.seek(Duration(milliseconds: (target * 1000).round())),
+        );
+      }
+    } else if (error.abs() > .15) {
+      // 误差较大才轻微调速（最多 ±2%），调速幅度小到听不出变调
+      wanted = rate * (1 + (error * .12).clamp(-.02, .02));
+    }
+    wanted = (wanted * 100).round() / 100;
+    if ((state.rate - wanted).abs() > .005) {
+      unawaited(_player.setRate(wanted));
+    }
+    return {'state': 'playing', 'position': current, 'error': error};
+  }
+
+  bool _nowPlayingLogged = false;
+
+  void _publishNowPlaying() {
+    if (_closed || widget.feed || _openedIndex != _index) return;
+    if (!_nowPlayingLogged) {
+      _nowPlayingLogged = true;
+      DiaryService.add('[锁屏] 首次发布播放信息: 第${widget.detail.episodes[_index].number}集');
+    }
+    final episodes = widget.detail.episodes;
+    unawaited(
+      AppDevice.channel
+          .invokeMethod<void>('nowPlayingUpdate', {
+            'title':
+                '${widget.detail.drama.title} 第${episodes[_index].number}集',
+            'duration': _player.state.duration.inMilliseconds / 1000,
+            'position': _currentPosition,
+            'rate': _playIntent ? _player.state.rate : 0.0,
+            'hasNext': _index + 1 < episodes.length,
+            'hasPrevious': _index > 0,
+          })
+          .catchError((Object _) {}),
+    );
+  }
+
+  void _onRemoteCommand(Map<String, dynamic> event) {
+    if (_closed || widget.feed) return;
+    final command = '${event['command']}';
+    DiaryService.add('[遥控] 收到系统指令: $command');
+    switch (command) {
+      case 'pause':
+        _onHeadphonesUnplugged();
+      case 'play':
+        if (!_playIntent && !_castFollower) _togglePlayback();
+      case 'toggle':
+        if (_castFollower) return;
+        _togglePlayback();
+      case 'next':
+        if (_index + 1 < widget.detail.episodes.length && !_castFollower) {
+          unawaited(_play(_index + 1));
+        }
+      case 'previous':
+        if (_index > 0 && !_castFollower) unawaited(_play(_index - 1));
+      case 'seek':
+        final position = event['position'];
+        if (position is num && position.isFinite && position >= 0) {
+          unawaited(_seekTo(Duration(milliseconds: (position * 1000).round())));
+        }
+    }
+    _publishNowPlaying();
+  }
+
+  void _onHeadphonesUnplugged() {
+    if (_closed || widget.feed) return;
+    DiaryService.add('[分屏] 耳机断开，暂停播放');
+    if (_castFollower) {
+      unawaited(_stopCastFollower());
+      return;
+    }
+    if (!_playIntent) return;
+    setState(() => _playIntent = false);
+    unawaited(_player.pause());
+    unawaited(_saveProgress(flush: true));
+  }
+
+  Future<void> _setVideoDecode(bool enabled) async {
+    final player = _player;
+    if (player is LunaExoPlayer) {
+      await player.setAudioOnly(!enabled).catchError((Object error) {
+        DiaryService.add('[分屏] 切换纯音频失败: $error');
+      });
+      return;
+    }
+    final native = _player.platform;
+    if (native is NativePlayer) {
+      await native
+          .setProperty('vid', enabled ? 'auto' : 'no')
+          .catchError((Object _) {});
+    }
+  }
+
+  Future<void> _stopCastFollower() async {
+    if (!_castFollower || _closed) return;
+    DiaryService.add('[分屏] 对方停止分屏，本机停止跟随');
+    _castFollower = false;
+    await _player.pause().catchError((Object _) {});
+    await _player.setVolume(100).catchError((Object _) {});
+    await _setVideoDecode(true);
+    if (mounted) {
+      setState(() {
+        _playIntent = false;
+        _castAudioTarget = null;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('对方已停止分屏播放')));
+    }
+  }
+
+  /// 声音端上报给电脑的倍速：以用户设定的倍速为准。
+  /// 后台暂停/恢复后播放引擎可能把倍速重置成 1.0，这里发现不一致就立刻纠正。
+  double _speedForCast() {
+    final wanted = _speed.toDouble();
+    if ((_player.state.rate - wanted).abs() > .01 && _openedIndex == _index) {
+      unawaited(_player.setRate(wanted).catchError((Object _) {}));
+    }
+    return wanted;
+  }
+
+  /// 手机作为分屏声音端被暂停时，循环静音保活，避免 iOS 挂起 App 导致电脑再点播放没声音、连接断开。
+  void _syncKeepAlive() {
+    if (_closed) return;
+    final need =
+        Platform.isIOS &&
+        _castAudioTarget != null &&
+        !_playIntent &&
+        !_player.state.playing;
+    if (need) {
+      _keepAliveTimer ??= Timer(const Duration(milliseconds: 1200), () {
+        _keepAliveTimer = null;
+        if (!_closed) unawaited(_keepAlive.start());
+      });
+    } else {
+      _keepAliveTimer?.cancel();
+      _keepAliveTimer = null;
+      if (_keepAlive.running) unawaited(_keepAlive.stop());
+    }
+  }
+
+  void _beginCastAudio(LanController link) {
+    final peer = link.connection?.peer.name ?? '电脑';
+    final videoHere = link.kind == 'computer';
+    if (videoHere) {
+      unawaited(_player.setVolume(0));
+    } else {
+      setState(() => _castAudioTarget = peer);
+      unawaited(_setVideoDecode(false));
+    }
+    link.startCast(
+      source: () => LanCastState(
+        episode: widget.detail.episodes[_index].number,
+        position: _currentPosition,
+        playing: _player.state.playing && _playIntent,
+        rate: _speedForCast(),
+      ),
+      onControl: _applyCastControl,
+      onEnded: () {
+        if (videoHere) {
+          unawaited(_player.setVolume(100));
+        } else {
+          unawaited(_setVideoDecode(true));
+        }
+        if (mounted && !_closed) setState(() => _castAudioTarget = null);
+        _syncKeepAlive();
+      },
+    );
+  }
+
   Future<void> _pushToDevice() async {
     final link = LanController.current;
     if (link == null ||
@@ -1192,6 +1726,10 @@ class _PlayerScreenState extends State<PlayerScreen>
           await _stopForLan();
           if (!current()) throw StateError('本机播放内容已变更');
         },
+        onCastAccepted: () async {
+          if (!current()) throw StateError('本机播放内容已变更');
+          _beginCastAudio(link);
+        },
       );
     } catch (error) {
       if (mounted && !_closed) {
@@ -1207,7 +1745,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   void _syncPreload() {
     if (_closed) return;
     if (!_preloadEnabled ||
-        !_foreground ||
+        !_active ||
         widget.localOnly ||
         _plan?.offline == true ||
         _loading ||
@@ -1217,6 +1755,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.store.locked ||
         _index + 1 >= widget.detail.episodes.length) {
       _preloader.clear();
+      if (_standbyRawUrl != null) unawaited(_dropStandby());
       return;
     }
     final state = _player.state;
@@ -1237,6 +1776,67 @@ class _PlayerScreenState extends State<PlayerScreen>
       widget.detail.episodes[_index + 1],
       quality: _requestedQuality,
     );
+    _warmStandby();
+  }
+
+  /// iOS：下一集播放地址就绪后，提前建好解密流与原生控制器，换集时直接接管。
+  void _warmStandby() {
+    final player = _player;
+    if (_closed ||
+        !Platform.isIOS ||
+        player is! LunaExoPlayer ||
+        _standbyBusy ||
+        _castFollower ||
+        (LanController.current?.casting ?? false)) {
+      return;
+    }
+    final raw = _preloader.ready;
+    if (raw == null || raw.local || raw.url.isEmpty) return;
+    if (_standbyRawUrl == raw.url) return;
+    _standbyBusy = true;
+    final tag = ++_standbyTag;
+    unawaited(() async {
+      final encrypted = EncryptedPlayback();
+      var kept = false;
+      try {
+        final prepared = await encrypted.prepare(raw);
+        if (_closed || tag != _standbyTag) return;
+        final ok = await player.warmUp(
+          Media(
+            prepared.url,
+            httpHeaders: prepared.headers,
+            extras: {'decryptionKey': prepared.decryptionKey},
+          ),
+        );
+        if (!ok || _closed || tag != _standbyTag) return;
+        await _dropStandby(keepPlayer: true);
+        _standbyEncrypted = encrypted;
+        _standbyPlan = prepared;
+        _standbyRawUrl = raw.url;
+        kept = true;
+      } catch (_) {
+      } finally {
+        if (!kept) await encrypted.close().catchError((Object _) {});
+        _standbyBusy = false;
+      }
+    }());
+  }
+
+  Future<void> _dropStandby({bool keepPlayer = false}) async {
+    _standbyTag++;
+    final encrypted = _standbyEncrypted;
+    _standbyEncrypted = null;
+    _standbyPlan = null;
+    _standbyRawUrl = null;
+    if (!keepPlayer) {
+      final player = _player;
+      if (player is LunaExoPlayer) {
+        unawaited(player.discardStandby().catchError((Object _) {}));
+      }
+    }
+    if (encrypted != null) {
+      unawaited(encrypted.close().catchError((Object _) {}));
+    }
   }
 
   void _syncDanmaku({bool discontinuity = false}) {
@@ -1298,7 +1898,14 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
+    if (_castFollower || (LanController.current?.casting ?? false)) {
+      DiaryService.add(
+        '[分屏] 生命周期=${state.name} 角色=${_castFollower ? "跟随端" : "发送端"} '
+        '播放中=${_player.state.playing} 位置=${_currentPosition.toStringAsFixed(1)}s',
+      );
+    }
     _applyLifecycleVisibility();
+    _publishNowPlaying();
   }
 
   void _queueRecovery({bool force = false}) {
@@ -1307,13 +1914,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     _pendingError = true;
     _requireRecovery = _requireRecovery || force;
-    if (!_foreground || (_errorTimer?.isActive ?? false)) {
+    if (!_active || (_errorTimer?.isActive ?? false)) {
       return;
     }
     final ticket = _generation;
     final position = _player.state.position;
     _errorTimer = Timer(const Duration(milliseconds: 900), () {
-      if (_closed || ticket != _generation || !_foreground || !_acceptErrors) {
+      if (_closed || ticket != _generation || !_active || !_acceptErrors) {
         return;
       }
       _pendingError = false;
@@ -1335,7 +1942,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final current = _plan;
     if (_closed ||
         !_acceptErrors ||
-        !_foreground ||
+        !_active ||
         current == null ||
         _error != null) {
       return;
@@ -1393,8 +2000,51 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  void _sendCastControl(Map<String, dynamic> body) {
+    _castHoldUntil = DateTime.now().add(const Duration(milliseconds: 2500));
+    final link = LanController.current;
+    if (link == null) return;
+    unawaited(
+      link.sendCastControl(body).catchError((Object error) {
+        DiaryService.add('[分屏] 控制指令发送失败: $error');
+        _castHoldUntil = DateTime(2000);
+      }),
+    );
+  }
+
+  Future<void> _applyCastControl(Map<String, dynamic> body) async {
+    if (_closed || _loading || _error != null) return;
+    switch (body['action']) {
+      case 'pause':
+        if (_playIntent) _togglePlayback();
+      case 'play':
+        if (!_playIntent) _togglePlayback();
+      case 'episode':
+        final number = body['number'];
+        final target = widget.detail.episodes.indexWhere(
+          (item) => item.number == number,
+        );
+        if (target >= 0 && target != _index) {
+          await _play(target, showControlsOnReady: false);
+        }
+      case 'seek':
+        final position = body['position'];
+        if (position is num && position.isFinite && position >= 0) {
+          await _seekTo(Duration(milliseconds: (position * 1000).round()));
+        }
+    }
+  }
+
   void _togglePlayback() {
     if (_closed || _loading || _error != null) return;
+    if (_castFollower) {
+      // 跟随端的操作转发给声音端，本机先行响应
+      final play = !_playIntent;
+      setState(() => _playIntent = play);
+      unawaited(play ? _player.play() : _player.pause());
+      _sendCastControl({'action': play ? 'play' : 'pause'});
+      return;
+    }
     _handoffOwned = false;
     widget.handoff?.fail('接收端已操作播放');
     _interactions.cancel();
@@ -1532,6 +2182,9 @@ class _PlayerScreenState extends State<PlayerScreen>
             : null);
     _preloader.clear();
     final ticket = ++_generation;
+    final switchWatch = Stopwatch()..start();
+    var resolvedMs = 0;
+    var openedMs = 0;
     _enhancement.suspend();
     _seekSequence++;
     _danmaku.setPlan(null);
@@ -1584,7 +2237,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         await _enhancement.beforeMedia();
         if (_closed || ticket != _generation) return;
         _openedIndex = -1;
-        if (!isSeamlessAdvance || _player is LunaExoPlayer) {
+        final standbyHit =
+            Platform.isIOS &&
+            warmed != null &&
+            !forceEncryptedCache &&
+            _standbyEncrypted != null &&
+            _standbyRawUrl == warmed.url;
+        if (!isSeamlessAdvance || (_player is LunaExoPlayer && !standbyHit)) {
           await _player.stop();
         }
         await _encryptedPlayback.cancel();
@@ -1597,7 +2256,15 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (recoveryAction == PlaybackRecoveryAction.refresh) {
             failedPlan = previous;
           }
-          await widget.repository.release(previous.session);
+          if (isSeamlessAdvance) {
+            unawaited(
+              widget.repository
+                  .release(previous.session)
+                  .catchError((Object _) {}),
+            );
+          } else {
+            await widget.repository.release(previous.session);
+          }
         }
       });
       if (_closed || ticket != _generation) {
@@ -1623,23 +2290,44 @@ class _PlayerScreenState extends State<PlayerScreen>
               localOnly: widget.localOnly,
               online: _forceOnline,
             );
+      resolvedMs = switchWatch.elapsedMilliseconds;
       if (prepared == null) {
         return;
       }
       if (Platform.isAndroid || Platform.isIOS) {
         failureStage = 'prepare';
-        prepared = await _encryptedPlayback.prepare(
-          prepared,
-          forceCache: forceEncryptedCache,
-          progress: (value) {
-            if (mounted && !_closed && ticket == _generation) {
-              setState(() {
-                _loading = true;
-                _loadingMessage = '正在准备视频 ${(value * 100).round()}%';
-              });
-            }
-          },
-        );
+        final standbyReady =
+            Platform.isIOS &&
+            warmed != null &&
+            !forceEncryptedCache &&
+            _standbyEncrypted != null &&
+            _standbyPlan != null &&
+            _standbyRawUrl == prepared.url;
+        if (standbyReady) {
+          // 接管已提前准备好的解密流（原控制器预热也会在 open 时被接管）
+          final old = _encryptedPlayback;
+          _encryptedPlayback = _standbyEncrypted!;
+          prepared = _standbyPlan!;
+          _standbyEncrypted = null;
+          _standbyPlan = null;
+          _standbyRawUrl = null;
+          _standbyTag++;
+          unawaited(old.close().catchError((Object _) {}));
+        } else {
+          if (_standbyRawUrl != null) unawaited(_dropStandby());
+          prepared = await _encryptedPlayback.prepare(
+            prepared,
+            forceCache: forceEncryptedCache,
+            progress: (value) {
+              if (mounted && !_closed && ticket == _generation) {
+                setState(() {
+                  _loading = true;
+                  _loadingMessage = '正在准备视频 ${(value * 100).round()}%';
+                });
+              }
+            },
+          );
+        }
       }
       final plan = prepared;
       failureStage = 'open';
@@ -1725,12 +2413,13 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ? Duration(milliseconds: (position * 1000).round())
                 : null,
           ),
-          play: _foreground && _playIntent,
+          play: _active && _playIntent,
         );
         if (_closed || ticket != _generation) {
           return;
         }
         _openedIndex = index;
+        openedMs = switchWatch.elapsedMilliseconds;
         DiaryService.add(
           '[Play] 清晰度判定: 请求=${_requestedQuality > 0 ? "${_requestedQuality}P" : "自动(优先高清)"}, '
           '源下发=${plan.quality > 0 ? "${plan.quality}P" : "未知"}, '
@@ -1753,6 +2442,11 @@ class _PlayerScreenState extends State<PlayerScreen>
           setState(() {
             _loading = false;
           });
+          DiaryService.add(
+            '[换集] 第${widget.detail.episodes[index].number}集 总耗时=${switchWatch.elapsedMilliseconds}ms '
+            '取地址=${resolvedMs}ms 准备并打开=${openedMs - resolvedMs}ms '
+            '预热=${warmed != null} 无缝=$isSeamlessAdvance',
+          );
           _danmaku.setPlan(plan);
           _syncDanmaku();
           _acknowledgeHandoff();
@@ -2142,6 +2836,14 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Future<void> _seekTo(Duration target) async {
     if (_closed || _loading || _error != null) return;
+    if (_castFollower) {
+      _sendCastControl({
+        'action': 'seek',
+        'position': target.inMilliseconds / 1000,
+      });
+      unawaited(_player.seek(target));
+      return;
+    }
     _handoffOwned = false;
     widget.handoff?.fail('接收端已调整播放位置');
     final ticket = ++_seekSequence;
@@ -2289,10 +2991,28 @@ class _PlayerScreenState extends State<PlayerScreen>
       PipManager.instance.retainPlaybackResource(_encryptedPlayback.close);
     }
     _closed = true;
+    _keepAliveTimer?.cancel();
+    unawaited(_keepAlive.dispose());
+    unawaited(_dropStandby(keepPlayer: true));
     _syncNativePictureInPictureConfig(force: true);
     unawaited(_player.pause().catchError((Object _) {}));
     final enhancementClosed = _enhancement.close();
+    _routeSub?.cancel();
+    _remoteSub?.cancel();
+    _nowPlayingTimer?.cancel();
+    if (!widget.feed && defaultTargetPlatform == TargetPlatform.iOS) {
+      unawaited(
+        AppDevice.channel
+            .invokeMethod<void>('nowPlayingClear')
+            .catchError((Object _) {}),
+      );
+    }
     LanController.current?.detachPlayback(_lanIdentity);
+    final castLink = LanController.current;
+    if (castLink != null) {
+      if (castLink.casting) unawaited(castLink.stopCast());
+      if (_castFollower) castLink.setCastReceiver(null);
+    }
     widget.handoff?.fail('接收端已退出播放');
     widget.store.removeListener(_accessChanged);
     _danmaku.dispose();
@@ -2330,6 +3050,33 @@ class _PlayerScreenState extends State<PlayerScreen>
         (Object _) {},
       ),
     );
+    if (_miniOwner == this) _miniOwner = null;
+    if (_deskMini && _miniHandedOver) {
+      _deskMini = false;
+    } else if (_deskMini && (_castFollower || widget.handoff != null)) {
+      _deskMini = false;
+      _carryMini = true;
+      final carried = _deskMiniRestore;
+      _carryMiniRestore = carried;
+      _carryMiniTimer?.cancel();
+      // 3 秒内没有新的投屏页面接手，就把窗口还原，避免留下一个小窗口里的首页
+      _carryMiniTimer = Timer(const Duration(seconds: 3), () {
+        if (!_carryMini) return;
+        _carryMini = false;
+        _carryMiniRestore = null;
+        unawaited(_restoreWindowFrom(carried));
+      });
+    } else if (_deskMini) {
+      _deskMini = false;
+      unawaited(
+        windowManager.setAspectRatio(0).then((_) {
+          windowManager.setAlwaysOnTop(false);
+          windowManager.setTitleBarStyle(TitleBarStyle.normal);
+          final b = _deskMiniRestore;
+          if (b != null) windowManager.setBounds(b);
+        }).catchError((Object _) {}),
+      );
+    }
     if (!widget.feed && Platform.isWindows) {
       unawaited(windowManager.setFullScreen(false));
     } else if (!widget.feed && (_mobile || _television && Platform.isAndroid)) {
@@ -2373,7 +3120,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final theme = Theme.of(context);
     final title = widget.detail.drama.title;
     final fullscreen = _showFullscreen;
-    final pictureInPicture = _pictureInPictureVisible;
+    final pictureInPicture = _pictureInPictureVisible || _deskMini;
     return PopScope(
       canPop: !_television && (pictureInPicture || !fullscreen),
       onPopInvokedWithResult: (didPop, result) {
@@ -2406,7 +3153,8 @@ class _PlayerScreenState extends State<PlayerScreen>
           canRequestFocus: !_television,
           skipTraversal: _television,
           child: Scaffold(
-            backgroundColor: fullscreen || pictureInPicture || _mobile
+            backgroundColor:
+                fullscreen || pictureInPicture || _mobile
                 ? AppColors.black
                 : theme.scaffoldBackgroundColor,
             appBar: pictureInPicture || fullscreen || _mobile
@@ -2425,11 +3173,13 @@ class _PlayerScreenState extends State<PlayerScreen>
                       ),
                     ],
                   ),
-            body: pictureInPicture
+            body: _deskMini
+                ? _deskMiniView(context)
+                : pictureInPicture
                 ? _videoPane(context)
                 : SafeArea(
                     top: false,
-                    bottom: !fullscreen,
+                    bottom: !fullscreen && !_mobile,
                     left: !fullscreen,
                     right: !fullscreen,
                     child: LayoutBuilder(
@@ -2465,6 +3215,9 @@ class _PlayerScreenState extends State<PlayerScreen>
                           );
                         }
                         if (_mobile) {
+                          return _immersiveLayout(context, constraints);
+                        }
+                        if (_mobile) {
                           final topPadding = fullscreen
                               ? 0.0
                               : MediaQuery.paddingOf(context).top;
@@ -2489,7 +3242,6 @@ class _PlayerScreenState extends State<PlayerScreen>
                                   seriesEntries: _currentSeriesEntries,
                                   onSeasonSelected: _switchSeason,
                                   onSelectEpisode: (index) => _play(index),
-                                  onSubmitDownload: _submitDownloadSelection,
                                 ),
                               ),
                             ],
@@ -2575,7 +3327,779 @@ class _PlayerScreenState extends State<PlayerScreen>
     ),
   );
 
-  Widget _videoPane(BuildContext context, {double topPadding = 0.0}) {
+  Widget _miniIcon(
+    IconData icon,
+    String label,
+    VoidCallback? onPressed, {
+    double size = 36,
+    double iconSize = 22,
+  }) => IconButton(
+    onPressed: onPressed,
+    icon: Icon(icon),
+    iconSize: iconSize,
+    tooltip: label,
+    color: Colors.white,
+    disabledColor: Colors.white38,
+    style: IconButton.styleFrom(
+      fixedSize: Size.square(size),
+      padding: EdgeInsets.zero,
+    ),
+  );
+
+  Widget _miniEdge(
+    ResizeEdge edge,
+    MouseCursor cursor, {
+    double? left,
+    double? top,
+    double? right,
+    double? bottom,
+    double? width,
+    double? height,
+  }) => Positioned(
+    left: left,
+    top: top,
+    right: right,
+    bottom: bottom,
+    width: width,
+    height: height,
+    child: MouseRegion(
+      cursor: cursor,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (_) => unawaited(windowManager.startResizing(edge)),
+      ),
+    ),
+  );
+
+  Widget _deskMiniView(BuildContext context) {
+    final video = _video;
+    final playing = _playIntent;
+    final visible = _deskMiniHover || !playing || _deskMiniSeek != null;
+    const t = 6.0;
+    const c = 12.0;
+    return Material(
+      color: Colors.black,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _deskMiniHover = true),
+        onExit: (_) => setState(() => _deskMiniHover = false),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (video != null)
+              Video(
+                controller: video,
+                fit: BoxFit.cover,
+                controls: NoVideoControls,
+              ),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (_) => unawaited(windowManager.startDragging()),
+              onDoubleTap: _toggleDeskMini,
+            ),
+            if (_loading)
+              const IgnorePointer(
+                child: Center(
+                  child: SizedBox.square(
+                    dimension: 28,
+                    child: CircularProgressIndicator(strokeWidth: 3),
+                  ),
+                ),
+              ),
+            IgnorePointer(
+              ignoring: !visible,
+              child: AnimatedOpacity(
+                opacity: visible ? 1 : 0,
+                duration: const Duration(milliseconds: 150),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const IgnorePointer(
+                      child: ColoredBox(color: Color(0x59000000)),
+                    ),
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Row(
+                        children: [
+                          _miniIcon(
+                            Icons.open_in_full_rounded,
+                            '还原',
+                            _toggleDeskMini,
+                          ),
+                          _miniIcon(Icons.close_rounded, '关闭', () {
+                            unawaited(_restoreDeskMini());
+                            _back();
+                          }),
+                        ],
+                      ),
+                    ),
+                    Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _miniIcon(
+                            Icons.skip_previous_rounded,
+                            '上一集',
+                            _index > 0 ? () => _stepEpisode(_index - 1) : null,
+                          ),
+                          _miniIcon(
+                            playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            playing ? '暂停' : '播放',
+                            _togglePlayback,
+                            size: 48,
+                            iconSize: 32,
+                          ),
+                          _miniIcon(
+                            Icons.skip_next_rounded,
+                            '下一集',
+                            _index + 1 < widget.detail.episodes.length
+                                ? () => _stepEpisode(_index + 1)
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      left: 4,
+                      right: 4,
+                      bottom: 2,
+                      height: 20,
+                      child: StreamBuilder<Duration>(
+                        stream: _player.stream.position,
+                        initialData: _player.state.position,
+                        builder: (context, snapshot) {
+                          final duration = _player.state.duration.inMilliseconds;
+                          final max = duration > 0 ? duration.toDouble() : 1.0;
+                          final position = (snapshot.data ?? Duration.zero)
+                              .inMilliseconds
+                              .toDouble();
+                          return SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 5,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10,
+                              ),
+                            ),
+                            child: Slider(
+                              value: (_deskMiniSeek ?? position).clamp(0.0, max),
+                              max: max,
+                              onChanged: duration > 0
+                                  ? (value) =>
+                                        setState(() => _deskMiniSeek = value)
+                                  : null,
+                              onChangeEnd: (value) {
+                                setState(() => _deskMiniSeek = null);
+                                unawaited(
+                                  _seekTo(Duration(milliseconds: value.round())),
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            _miniEdge(
+              ResizeEdge.top,
+              SystemMouseCursors.resizeUpDown,
+              left: c,
+              right: c,
+              top: 0,
+              height: t,
+            ),
+            _miniEdge(
+              ResizeEdge.bottom,
+              SystemMouseCursors.resizeUpDown,
+              left: c,
+              right: c,
+              bottom: 0,
+              height: t,
+            ),
+            _miniEdge(
+              ResizeEdge.left,
+              SystemMouseCursors.resizeLeftRight,
+              left: 0,
+              top: c,
+              bottom: c,
+              width: t,
+            ),
+            _miniEdge(
+              ResizeEdge.right,
+              SystemMouseCursors.resizeLeftRight,
+              right: 0,
+              top: c,
+              bottom: c,
+              width: t,
+            ),
+            _miniEdge(
+              ResizeEdge.topLeft,
+              SystemMouseCursors.resizeUpLeftDownRight,
+              left: 0,
+              top: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.bottomRight,
+              SystemMouseCursors.resizeUpLeftDownRight,
+              right: 0,
+              bottom: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.topRight,
+              SystemMouseCursors.resizeUpRightDownLeft,
+              right: 0,
+              top: 0,
+              width: c,
+              height: c,
+            ),
+            _miniEdge(
+              ResizeEdge.bottomLeft,
+              SystemMouseCursors.resizeUpRightDownLeft,
+              left: 0,
+              bottom: 0,
+              width: c,
+              height: c,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showSynopsis() async {
+    if (_panelOpen || _closed) return;
+    final drama = widget.detail.drama;
+    final text = drama.description.trim().isEmpty ? '暂无简介' : drama.description;
+    setState(() => _panelOpen = true);
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: const Color(0xFF20262B),
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        builder: (context) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  drama.title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Text(
+                      text,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14.5,
+                        height: 1.6,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _panelOpen = false);
+    }
+  }
+
+  Widget _immersivePill({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) => Material(
+    color: Colors.white.withValues(alpha: .10),
+    borderRadius: BorderRadius.circular(10),
+    child: InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white70, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: const TextStyle(color: Colors.white70, fontSize: 15),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _immersiveTopBar(int number) => SizedBox(
+    height: 52,
+    child: Row(
+      children: [
+        IconButton(
+          tooltip: '返回',
+          onPressed: _back,
+          icon: const Icon(
+            Icons.chevron_left_rounded,
+            color: Colors.white,
+            size: 32,
+          ),
+        ),
+        Expanded(
+          child: _immersiveClean
+              ? const SizedBox.shrink()
+              : Text(
+                  '第$number集',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+        ),
+        if (!_immersiveClean)
+        InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: () => unawaited(_openPanel(PlayerMenuSection.speed)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.speed_rounded, color: Colors.white, size: 22),
+                const SizedBox(width: 4),
+                Text(
+                  '${_speed}x',
+                  style: const TextStyle(color: Colors.white, fontSize: 15),
+                ),
+              ],
+            ),
+          ),
+        ),
+        IconButton(
+          tooltip: '更多',
+          onPressed: () => unawaited(_showImmersiveMenu()),
+          icon: const Icon(Icons.more_vert_rounded, color: Colors.white),
+        ),
+      ],
+    ),
+  );
+
+  Widget _immersiveInfo(int number) {
+    final drama = widget.detail.drama;
+    final synopsis = drama.description.trim();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: _showSynopsis,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    drama.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 19,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const Icon(Icons.chevron_right_rounded, color: Colors.white70),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          GestureDetector(
+            onTap: _showSynopsis,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    synopsis.isEmpty ? '第$number集' : '第$number集 | $synopsis',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  '展开',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _immersiveProgress() => SizedBox(
+    height: 24,
+    child: StreamBuilder<Duration>(
+      stream: _player.stream.position,
+      initialData: _player.state.position,
+      builder: (context, snapshot) {
+        final duration = _player.state.duration.inMilliseconds;
+        final max = duration > 0 ? duration.toDouble() : 1.0;
+        final position = (snapshot.data ?? Duration.zero).inMilliseconds
+            .toDouble();
+        return SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: _immersiveSeek != null ? 3 : 1,
+            activeTrackColor: Colors.white.withValues(
+              alpha: _immersiveSeek != null ? .95 : .22,
+            ),
+            inactiveTrackColor: Colors.white.withValues(
+              alpha: _immersiveSeek != null ? .3 : .05,
+            ),
+            thumbColor: Colors.white,
+            thumbShape: _immersiveSeek != null
+                ? const RoundSliderThumbShape(enabledThumbRadius: 5)
+                : SliderComponentShape.noThumb,
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+          ),
+          child: Slider(
+            value: (_immersiveSeek ?? position).clamp(0.0, max),
+            max: max,
+            onChanged: duration > 0
+                ? (value) => setState(() => _immersiveSeek = value)
+                : null,
+            onChangeEnd: (value) {
+              setState(() => _immersiveSeek = null);
+              unawaited(_seekTo(Duration(milliseconds: value.round())));
+            },
+          ),
+        );
+      },
+    ),
+  );
+
+  Widget _immersiveBottomBar(MediaQueryData media) => Padding(
+    padding: EdgeInsets.fromLTRB(
+      16,
+      4,
+      16,
+      media.padding.bottom > 8 ? media.padding.bottom : 8.0,
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: Material(
+            color: Colors.white.withValues(alpha: .10),
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => unawaited(_openPanel(PlayerMenuSection.episodes)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 9,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '选集 · 全${widget.detail.episodes.length}集',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14.5,
+                        ),
+                      ),
+                    ),
+                    const Icon(
+                      Icons.keyboard_arrow_up_rounded,
+                      color: Colors.white70,
+                      size: 20,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        IconButton(
+          tooltip: _immersiveClean ? '显示信息' : '清屏',
+          onPressed: () => setState(() => _immersiveClean = !_immersiveClean),
+          icon: Icon(
+            _immersiveClean
+                ? Icons.fullscreen_exit_rounded
+                : Icons.fullscreen_rounded,
+            color: Colors.white,
+            size: 26,
+          ),
+        ),
+      ],
+    ),
+  );
+
+  /// 手机竖屏的沉浸式布局。
+  /// - 横屏视频：深色背景、视频居中，下方是「全屏观看」、标题简介、进度条。
+  /// - 竖屏视频：视频铺满屏幕，顶部栏与标题简介、进度条叠在画面上。
+  /// 选集收在底部一条按钮里，点开向上弹出。
+  Widget _immersiveLayout(BuildContext context, BoxConstraints constraints) {
+    final media = MediaQuery.of(context);
+    final number = widget.detail.episodes[_index].number;
+    if (_aspectRatio < 1) {
+      return ColoredBox(
+        color: const Color(0xFF14181B),
+        child: Column(
+          children: [
+            Expanded(
+              child: ClipRect(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const ColoredBox(color: Colors.black),
+                    _videoPane(context, immersive: true),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      child: DecoratedBox(
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Color(0x99000000), Color(0x00000000)],
+                          ),
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.only(top: media.padding.top),
+                          child: _immersiveTopBar(number),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: _immersiveClean
+                              ? null
+                              : const LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [
+                                    Color(0x00000000),
+                                    Color(0xB3000000),
+                                  ],
+                                ),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (!_immersiveClean) ...[
+                              const SizedBox(height: 28),
+                              _immersiveInfo(number),
+                              const SizedBox(height: 4),
+                            ],
+                            _immersiveProgress(),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            _immersiveBottomBar(media),
+          ],
+        ),
+      );
+    }
+    final videoHeight = (constraints.maxWidth / _aspectRatio).clamp(
+      0.0,
+      constraints.maxHeight * .5,
+    );
+    return ColoredBox(
+      color: const Color(0xFF14181B),
+      child: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.only(top: media.padding.top),
+            child: _immersiveTopBar(number),
+          ),
+          Expanded(
+            child: Align(
+              alignment: const Alignment(0, -0.25),
+              child: SizedBox(
+                height: videoHeight,
+                width: double.infinity,
+                child: _videoPane(context, immersive: true),
+              ),
+            ),
+          ),
+          // 清屏时只隐藏、不移除，保持占位，避免视频位置跳动
+          Visibility(
+            visible: !_immersiveClean,
+            maintainSize: true,
+            maintainAnimation: true,
+            maintainState: true,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: _immersivePill(
+                    icon: Icons.screen_rotation_alt_rounded,
+                    label: '全屏观看',
+                    onTap: _rotate,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                _immersiveInfo(number),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+          _immersiveProgress(),
+          _immersiveBottomBar(media),
+        ],
+      ),
+    );
+  }
+
+  Widget _immersiveTapLayer() {
+    final showPlay = !_playIntent && !_loading && _error == null;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _togglePlayback,
+      child: AnimatedOpacity(
+        opacity: showPlay ? 1 : 0,
+        duration: const Duration(milliseconds: 150),
+        child: Center(
+          child: Container(
+            width: 68,
+            height: 68,
+            decoration: const BoxDecoration(
+              color: Color(0x66000000),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.play_arrow_rounded,
+              color: Colors.white,
+              size: 46,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showImmersiveMenu() async {
+    if (_panelOpen || _closed) return;
+    final hongguo = widget.detail.drama.source == 'hongguo';
+    final items = <({IconData icon, String label, VoidCallback run})>[
+      (
+        icon: Icons.high_quality_rounded,
+        label: '清晰度',
+        run: () => unawaited(_openPanel(PlayerMenuSection.quality)),
+      ),
+      if (hongguo)
+        (
+          icon: Icons.subtitles_rounded,
+          label: _danmakuEnabled ? '关闭弹幕' : '开启弹幕',
+          run: () => unawaited(Future<void>.sync(_toggleDanmaku)),
+        ),
+      if (_canUsePictureInPicture)
+        (
+          icon: Icons.picture_in_picture_alt_rounded,
+          label: '小窗播放',
+          run: () => unawaited(_enterPictureInPicture()),
+        ),
+      if (LanController.current != null && widget.mediaId == null)
+        (
+          icon: Icons.cast_connected_rounded,
+          label: '推送 / 分屏播放',
+          run: () => unawaited(_pushToDevice()),
+        ),
+      (
+        icon: Icons.tune_rounded,
+        label: '更多设置',
+        run: () => unawaited(_openPanel(PlayerMenuSection.settings)),
+      ),
+    ];
+    setState(() => _panelOpen = true);
+    VoidCallback? chosen;
+    try {
+      chosen = await showModalBottomSheet<VoidCallback>(
+        context: context,
+        backgroundColor: const Color(0xFF20262B),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        builder: (context) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              for (final item in items)
+                ListTile(
+                  minTileHeight: 52,
+                  leading: Icon(item.icon, color: Colors.white70),
+                  title: Text(
+                    item.label,
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                  onTap: () => Navigator.pop(context, item.run),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _panelOpen = false);
+    }
+    chosen?.call();
+  }
+
+  Widget _videoPane(
+    BuildContext context, {
+    double topPadding = 0.0,
+    bool immersive = false,
+  }) {
     return PlayerViewportView(
       topPadding: topPadding,
       television: _television,
@@ -2604,7 +4128,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       qualityLabel: _qualityLabel,
       showControlsOnPlaybackReady: _showControlsOnPlaybackReady,
       panelOpen: _panelOpen,
-      canUsePictureInPicture: _canUsePictureInPicture,
+      canUsePictureInPicture: _canUsePictureInPicture || _deskMiniAvailable,
       pictureInPictureRequested: _pictureInPictureRequested,
       playerFocus: _playerFocus,
       videoPaneKey: _videoPaneKey,
@@ -2614,7 +4138,10 @@ class _PlayerScreenState extends State<PlayerScreen>
       repository: widget.repository,
       store: widget.store,
       videoBuilder: widget.videoBuilder,
-      controlsOverlay: widget.feed ? _feedControls() : null,
+      fit: immersive && _aspectRatio < 1 ? BoxFit.cover : BoxFit.contain,
+      controlsOverlay: widget.feed
+          ? _feedControls()
+          : (immersive ? _immersiveTapLayer() : null),
       onTogglePlayback: _togglePlayback,
       onSeek: _seek,
       onSeekTo: _seekTo,
@@ -2629,7 +4156,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       onDanmakuSettings: _openDanmakuSettings,
       onRetryDanmaku: _retryDanmakuFromControls,
       onPushToDevice: _pushToDevice,
-      onEnterPictureInPicture: _enterPictureInPicture,
+      audioOnlyTarget: _castAudioTarget,
+      onEnterPictureInPicture:
+          _deskMiniAvailable ? _toggleDeskMini : _enterPictureInPicture,
       onRestorePictureInPicture: _restoreFromPictureInPicture,
       onTelevisionEpisodes: _televisionEpisodes,
       onTelevisionSettings: _televisionSettings,
