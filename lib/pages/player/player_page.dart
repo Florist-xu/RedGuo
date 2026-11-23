@@ -179,6 +179,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
   bool _deskMini = false;
+  double _miniFittedRatio = 0;
   // 小窗跟随端被新的投屏页面替换（断线重连）时，把小窗状态交给新页面，窗口不还原。
   static bool _carryMini = false;
   static Rect? _carryMiniRestore;
@@ -240,6 +241,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     try {
       if (!_deskMini) {
         if (_fullscreen) await _rotate();
+        // 窗口在后台/最小化/隐藏时也要先拉起来，否则尺寸调整不生效
+        if (await windowManager.isMinimized()) await windowManager.restore();
+        if (!await windowManager.isVisible()) await windowManager.show();
         _deskMiniRestore = await windowManager.getBounds();
         if (await windowManager.isMaximized()) await windowManager.unmaximize();
         await windowManager.setTitleBarStyle(
@@ -254,6 +258,14 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
         _miniOwner = this;
         if (mounted) setState(() => _deskMini = true);
+        // 视频尺寸可能在切换过程中才到达，稍后再校正一次窗口比例
+        unawaited(
+          Future<void>.delayed(const Duration(milliseconds: 600), () async {
+            if (mounted && !_closed && _deskMini) {
+              await _fitDeskMini().catchError((Object _) {});
+            }
+          }),
+        );
       } else {
         await _restoreDeskMini();
       }
@@ -266,6 +278,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   Future<void> _fitDeskMini() async {
     final raw = _aspectRatio.isFinite && _aspectRatio > 0 ? _aspectRatio : 16 / 9;
     final ratio = raw.clamp(0.4, 2.39).toDouble();
+    _miniFittedRatio = raw;
     final size = ratio >= 1 ? Size(480, 480 / ratio) : Size(480 * ratio, 480);
     await windowManager.setAspectRatio(ratio);
     await windowManager.setSize(size);
@@ -605,7 +618,9 @@ class _PlayerScreenState extends State<PlayerScreen>
           setState(() {
             _aspectRatio = size.width / size.height;
           });
-          if (_deskMini && (before >= 1) != (_aspectRatio >= 1)) {
+          if (_deskMini &&
+              ((before >= 1) != (_aspectRatio >= 1) ||
+                  (_aspectRatio - _miniFittedRatio).abs() > .02)) {
             unawaited(_fitDeskMini().catchError((_) {}));
           }
           _scheduleSystemUi();
