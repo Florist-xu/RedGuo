@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:THLRedLook/core/player/audio_route.dart';
@@ -131,6 +132,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   double _castError = 0;
   DateTime _castHoldUntil = DateTime(2000);
   DateTime _castSwitchedAt = DateTime(2000);
+  DateTime _castLastSyncAt = DateTime.now();
+  bool _castStalled = false;
+  Timer? _castWatch;
+  bool _recasting = false;
   final _keepAlive = KeepAliveAudio();
   // iOS：本机播放时切后台/锁屏，改为只解码声音继续播放（像音乐 App），回到前台恢复画面
   bool _bgAudio = false;
@@ -244,7 +249,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         await windowManager.setMinimumSize(const Size(90, 90));
         await windowManager.setAlwaysOnTop(true);
         await _fitDeskMini();
-        await windowManager.setAlignment(Alignment.bottomRight);
+        if (!await _restoreMiniPosition()) {
+          await windowManager.setAlignment(Alignment.bottomRight);
+        }
         _miniOwner = this;
         if (mounted) setState(() => _deskMini = true);
       } else {
@@ -264,8 +271,32 @@ class _PlayerScreenState extends State<PlayerScreen>
     await windowManager.setSize(size);
   }
 
+  /// 记住小窗上次被拖到的位置，下次直接回到那里。
+  Future<void> _saveMiniPosition() async {
+    try {
+      final pos = await windowManager.getPosition();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('desk_mini_x', pos.dx);
+      await prefs.setDouble('desk_mini_y', pos.dy);
+    } catch (_) {}
+  }
+
+  Future<bool> _restoreMiniPosition() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final x = prefs.getDouble('desk_mini_x');
+      final y = prefs.getDouble('desk_mini_y');
+      if (x == null || y == null || x < -50 || y < -50) return false;
+      await windowManager.setPosition(Offset(x, y));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _restoreDeskMini() async {
     if (_miniOwner == this) _miniOwner = null;
+    await _saveMiniPosition();
     final bounds = _deskMiniRestore;
     _deskMiniRestore = null;
     await windowManager.setAspectRatio(0);
@@ -405,6 +436,16 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
     }
     if (_castFollower) {
+      _castWatch = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (_closed || !_castFollower) return;
+        final stalled =
+            DateTime.now().difference(_castLastSyncAt) >
+            const Duration(seconds: 9);
+        if (stalled && !_castStalled) {
+          _castStalled = true;
+          _notice('与手机失去连接，等待手机重新投屏…');
+        }
+      });
       if (widget.handoff?.intent.castAudio == true) {
         _castAudioTarget =
             LanController.current?.connection?.peer.name ?? '电脑';
@@ -700,6 +741,52 @@ class _PlayerScreenState extends State<PlayerScreen>
       DiaryService.add('[分屏] 换季后已重新投屏');
     } catch (error) {
       DiaryService.add('[分屏] 换季后重新投屏失败: $error');
+    }
+  }
+
+  /// 意外断线后，每隔几秒尝试重新投屏，最多约 2 分钟；成功、用户自己重投或页面关闭即停。
+  Future<void> _autoRecast(LanController link) async {
+    if (_recasting) return;
+    _recasting = true;
+    try {
+      for (var i = 0; i < 30; i++) {
+        await Future<void>.delayed(const Duration(seconds: 4));
+        if (_closed || !mounted || link.casting) return;
+        if (_loading || _error != null || link.pushing) continue;
+        final generation = _generation;
+        final index = _index;
+        bool current() =>
+            mounted &&
+            !_closed &&
+            generation == _generation &&
+            index == _index &&
+            widget.store.profileEpoch == _profileEpoch;
+        try {
+          await link.pushPlayback(
+            snapshot: () => LanPlaybackIntent(
+              drama: widget.detail.drama,
+              episodeID: widget.detail.episodes[index].id,
+              episode: widget.detail.episodes[index].number,
+              position: _currentPosition,
+            ).asCast(audio: link.kind == 'computer'),
+            stillCurrent: current,
+            onAccepted: () async {
+              if (!current()) throw StateError('本机播放内容已变更');
+              _beginCastAudio(link);
+            },
+            confirmReplace: (_) async => true,
+          );
+          DiaryService.add('[分屏] 断线后自动重新投屏成功');
+          _notice('已自动重新投屏');
+          return;
+        } catch (error) {
+          if (i == 0) DiaryService.add('[分屏] 自动重投未成功，继续重试: $error');
+        }
+      }
+      DiaryService.add('[分屏] 自动重投超时，请手动重新投屏');
+      _notice('自动重新投屏失败，请手动重新投屏');
+    } finally {
+      _recasting = false;
     }
   }
 
@@ -1454,6 +1541,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_closed || widget.store.profileEpoch != _profileEpoch) {
       throw StateError('接收端播放已关闭');
     }
+    _castLastSyncAt = DateTime.now();
+    if (_castStalled) {
+      _castStalled = false;
+      _notice('已恢复同步');
+    }
     // 本机刚操作过播放/暂停/拖动，等声音端处理完再跟随，避免被旧状态拉回
     if (DateTime.now().isBefore(_castHoldUntil)) {
       return {'state': 'hold'};
@@ -1686,6 +1778,10 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
         if (mounted && !_closed) setState(() => _castAudioTarget = null);
         _syncKeepAlive();
+        if (link.castMessage.contains('失去连接')) {
+          _notice('与对方断开，正在尝试自动重新投屏…');
+          unawaited(_autoRecast(link));
+        }
       },
     );
   }
@@ -3000,6 +3096,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _routeSub?.cancel();
     _remoteSub?.cancel();
     _nowPlayingTimer?.cancel();
+    _castWatch?.cancel();
     if (!widget.feed && defaultTargetPlatform == TargetPlatform.iOS) {
       unawaited(
         AppDevice.channel
