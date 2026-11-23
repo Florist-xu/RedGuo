@@ -723,43 +723,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     if (_closed || !mounted || _loading || _error != null) return;
-    final generation = _generation;
-    final index = _index;
-    bool current() =>
-        mounted &&
-        !_closed &&
-        generation == _generation &&
-        index == _index &&
-        widget.store.profileEpoch == _profileEpoch;
-    final videoHere = link.kind == 'computer';
-    try {
-      await link.pushPlayback(
-        snapshot: () => LanPlaybackIntent(
-          drama: widget.detail.drama,
-          episodeID: widget.detail.episodes[index].id,
-          episode: widget.detail.episodes[index].number,
-          position: _currentPosition,
-        ).asCast(audio: videoHere),
-        stillCurrent: current,
-        onAccepted: () async {
-          if (!current()) throw StateError('本机播放内容已变更');
-          _beginCastAudio(link);
-        },
-        confirmReplace: (_) async => true,
-      );
-      DiaryService.add('[分屏] 换季后已重新投屏');
-    } catch (error) {
-      DiaryService.add('[分屏] 换季后重新投屏失败: $error');
-    }
+    await _autoRecast(link, immediate: true);
   }
 
   /// 意外断线后，每隔几秒尝试重新投屏，最多约 2 分钟；成功、用户自己重投或页面关闭即停。
-  Future<void> _autoRecast(LanController link) async {
+  Future<void> _autoRecast(LanController link, {bool immediate = false}) async {
     if (_recasting) return;
     _recasting = true;
     try {
       for (var i = 0; i < 30; i++) {
-        await Future<void>.delayed(const Duration(seconds: 4));
+        if (!(immediate && i == 0)) {
+          await Future<void>.delayed(const Duration(seconds: 4));
+        }
         if (_closed || !mounted || link.casting) return;
         if (_loading || _error != null || link.pushing) continue;
         final generation = _generation;
