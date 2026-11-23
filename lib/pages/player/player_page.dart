@@ -436,6 +436,15 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
     }
     if (_castFollower) {
+      // 电脑作为分屏画面端：没有小窗时自动进入小窗（位置沿用上次记忆）
+      if (_deskMiniAvailable && !_deskMini) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_closed && _castFollower && !_deskMini) {
+            DiaryService.add('[分屏] 电脑自动进入小窗');
+            unawaited(_toggleDeskMini());
+          }
+        });
+      }
       _castWatch = Timer.periodic(const Duration(seconds: 3), (_) {
         if (_closed || !_castFollower) return;
         final stalled =
