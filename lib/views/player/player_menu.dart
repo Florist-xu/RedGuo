@@ -166,6 +166,48 @@ class _PlayerMenuState extends State<PlayerMenu> {
     );
   }
 
+  /// 跳过片头/片尾秒数调节：− / + 每次 5 秒，0 为关闭。
+  Widget _skipRow(String title, int value, void Function(int) assign) {
+    void change(int next) {
+      final clamped = next.clamp(0, 300);
+      if (clamped == value) return;
+      setState(() => assign(clamped));
+      _run(() => widget.onPreferences(_preferences));
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(fontSize: 16),
+            ),
+          ),
+          IconButton(
+            tooltip: '减少 5 秒',
+            onPressed: _busy || value <= 0 ? null : () => change(value - 5),
+            icon: const Icon(Icons.remove_circle_outline_rounded),
+          ),
+          SizedBox(
+            width: 52,
+            child: Text(
+              value == 0 ? '关' : '$value 秒',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+          ),
+          IconButton(
+            tooltip: '增加 5 秒',
+            onPressed: _busy || value >= 300 ? null : () => change(value + 5),
+            icon: const Icon(Icons.add_circle_outline_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _settings() {
     final preferences = _preferences;
     final all = widget.section == PlayerMenuSection.settings;
@@ -437,6 +479,17 @@ class _PlayerMenuState extends State<PlayerMenu> {
                     });
                     _run(() => widget.onPreferences(_preferences));
                   },
+          ),
+          const SizedBox(height: 8),
+          _skipRow(
+            '跳过片头',
+            preferences.skipIntro,
+            (value) => _preferences = _preferences.copyWith(skipIntro: value),
+          ),
+          _skipRow(
+            '跳过片尾',
+            preferences.skipOutro,
+            (value) => _preferences = _preferences.copyWith(skipOutro: value),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(

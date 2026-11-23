@@ -163,6 +163,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _automaticFullscreenSuppressed = false;
   bool _panelOpen = false;
   bool _autoAdvance = true;
+  int _skipIntro = 0;
+  int _skipOutro = 0;
+  int _outroSkippedGeneration = -1;
   bool? _systemFullscreen;
   Orientation? _lastOrientation;
   bool _closed = false;
@@ -338,6 +341,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     speed: _speed,
     quality: _requestedQuality,
     autoAdvance: _autoAdvance,
+    skipIntro: _skipIntro,
+    skipOutro: _skipOutro,
     pictureInPicture: widget.store.playbackPreferences.pictureInPicture,
     decoderMode: _decoderMode,
     danmaku: _danmakuEnabled,
@@ -370,6 +375,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _requestedQuality = preferences.quality;
     _decoderMode = preferences.decoderMode;
     _autoAdvance = preferences.autoAdvance;
+    _skipIntro = preferences.skipIntro;
+    _skipOutro = preferences.skipOutro;
     _danmakuEnabled = preferences.danmaku;
     _danmakuStyle = preferences.danmakuStyle;
     _preloadEnabled = preferences.preload;
@@ -558,26 +565,8 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (duration <= Duration.zero ||
               currentPosition < duration - const Duration(seconds: 2)) {
             _queueRecovery();
-          } else if (_autoAdvance &&
-              !_castFollower &&
-              _active &&
-              !_panelOpen &&
-              _index + 1 < widget.detail.episodes.length) {
-            _play(_index + 1, showControlsOnReady: false);
-          } else if (_autoAdvance &&
-              !_castFollower &&
-              _active &&
-              !_panelOpen &&
-              !widget.feed &&
-              widget.mediaId == null &&
-              _nextSeasonDrama() != null) {
-            DiaryService.add('[换集] 本季播完，自动进入下一季');
-            unawaited(_switchSeason(_nextSeasonDrama()!));
           } else {
-            setState(() => _playIntent = false);
-            _interactions.cancel();
-            unawaited(_player.pause());
-            unawaited(_saveProgress(flush: true));
+            _finishEpisode();
           }
         }
       }),
@@ -590,6 +579,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _syncDanmaku();
         _syncPreload();
         _acknowledgeHandoff();
+        _maybeSkipOutro(position);
       }),
     );
     for (final stream in [
@@ -707,6 +697,61 @@ class _PlayerScreenState extends State<PlayerScreen>
         });
       }
     } catch (_) {}
+  }
+
+  /// 本集播完（或到达片尾跳过点）：自动连播下一集 / 下一季，否则停在当前集。
+  void _finishEpisode() {
+    if (_closed) return;
+    if (_autoAdvance &&
+        !_castFollower &&
+        _active &&
+        !_panelOpen &&
+        _index + 1 < widget.detail.episodes.length) {
+      _play(_index + 1, showControlsOnReady: false);
+    } else if (_autoAdvance &&
+        !_castFollower &&
+        _active &&
+        !_panelOpen &&
+        !widget.feed &&
+        widget.mediaId == null &&
+        _nextSeasonDrama() != null) {
+      DiaryService.add('[换集] 本季播完，自动进入下一季');
+      unawaited(_switchSeason(_nextSeasonDrama()!));
+    } else {
+      setState(() => _playIntent = false);
+      _interactions.cancel();
+      unawaited(_player.pause());
+      unawaited(_saveProgress(flush: true));
+    }
+  }
+
+  /// 到达「总时长 − 片尾秒数」时直接进入下一集（每集只触发一次，最后一集不跳）。
+  void _maybeSkipOutro(Duration position) {
+    if (_skipOutro <= 0 ||
+        !_autoAdvance ||
+        _closed ||
+        _castFollower ||
+        _loading ||
+        _error != null ||
+        _openedIndex != _index ||
+        _outroSkippedGeneration == _generation ||
+        !_player.state.playing ||
+        widget.feed) {
+      return;
+    }
+    final duration = _player.state.duration;
+    if (duration <= Duration.zero ||
+        duration.inSeconds < _skipIntro + _skipOutro + 15 ||
+        position < duration - Duration(seconds: _skipOutro)) {
+      return;
+    }
+    final hasNext =
+        _index + 1 < widget.detail.episodes.length ||
+        (widget.mediaId == null && _nextSeasonDrama() != null);
+    if (!hasNext) return;
+    _outroSkippedGeneration = _generation;
+    DiaryService.add('[换集] 已跳过片尾 $_skipOutro 秒');
+    _finishEpisode();
   }
 
   /// 当前季之后第一个可播放的季（用于整季播完自动接下一季）。
@@ -2246,6 +2291,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         index >= widget.detail.episodes.length) {
       return;
     }
+    // 跳过片头：从头开始播放时直接定位到片头结束处（分屏跟随端由声音端决定进度）
+    if (recoveryAction == null &&
+        !_castFollower &&
+        _skipIntro > 0 &&
+        position < _skipIntro) {
+      position = _skipIntro.toDouble();
+    }
     if (recoveryAction != null &&
         recoveryAction != PlaybackRecoveryAction.cache) {
       final previousGeneration = _generation;
@@ -2737,6 +2789,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       _requestedQuality = nextPreferences.quality;
       _decoderMode = nextPreferences.decoderMode;
       _autoAdvance = nextPreferences.autoAdvance;
+      _skipIntro = nextPreferences.skipIntro;
+      _skipOutro = nextPreferences.skipOutro;
       _danmakuEnabled = nextPreferences.danmaku;
       _danmakuStyle = nextPreferences.danmakuStyle;
       _preloadEnabled = nextPreferences.preload;

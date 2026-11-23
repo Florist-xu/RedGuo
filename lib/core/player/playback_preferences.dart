@@ -17,6 +17,8 @@ class PlaybackPreferences {
     this.speed = 1,
     this.quality = 0,
     this.autoAdvance = true,
+    this.skipIntro = 0,
+    this.skipOutro = 0,
     this.pictureInPicture = true,
     this.danmaku = true,
     this.danmakuStyle = const DanmakuStyle(),
@@ -28,6 +30,9 @@ class PlaybackPreferences {
   final double speed;
   final int quality;
   final bool autoAdvance;
+  /// 跳过片头 / 片尾的秒数，0 表示不跳过。
+  final int skipIntro;
+  final int skipOutro;
   final bool pictureInPicture;
   final bool danmaku;
   final DanmakuStyle danmakuStyle;
@@ -39,6 +44,8 @@ class PlaybackPreferences {
     double? speed,
     int? quality,
     bool? autoAdvance,
+    int? skipIntro,
+    int? skipOutro,
     bool? pictureInPicture,
     bool? danmaku,
     DanmakuStyle? danmakuStyle,
@@ -49,6 +56,8 @@ class PlaybackPreferences {
     speed: speed ?? this.speed,
     quality: quality ?? this.quality,
     autoAdvance: autoAdvance ?? this.autoAdvance,
+    skipIntro: skipIntro ?? this.skipIntro,
+    skipOutro: skipOutro ?? this.skipOutro,
     pictureInPicture: pictureInPicture ?? this.pictureInPicture,
     danmaku: danmaku ?? this.danmaku,
     danmakuStyle: danmakuStyle ?? this.danmakuStyle,
@@ -61,6 +70,8 @@ class PlaybackPreferences {
     'speed': speed,
     'quality': quality,
     'autoAdvance': autoAdvance,
+    'skipIntro': skipIntro,
+    'skipOutro': skipOutro,
     'pictureInPicture': pictureInPicture,
     'danmaku': danmaku,
     'danmakuStyle': danmakuStyle.toJson(),
@@ -73,6 +84,8 @@ class PlaybackPreferences {
     final speed = (value['speed'] as num? ?? 1).toDouble();
     final quality = value['quality'] as int? ?? 0;
     final autoAdvance = value['autoAdvance'] as bool? ?? true;
+    final skipIntro = ((value['skipIntro'] as num?)?.toInt() ?? 0).clamp(0, 300);
+    final skipOutro = ((value['skipOutro'] as num?)?.toInt() ?? 0).clamp(0, 300);
     final pictureInPicture = value['pictureInPicture'] as bool? ?? true;
     final danmaku = value['danmaku'] as bool? ?? true;
     final danmakuStyle = value['danmakuStyle'] is Map
@@ -91,6 +104,8 @@ class PlaybackPreferences {
       speed: speed,
       quality: quality,
       autoAdvance: autoAdvance,
+      skipIntro: skipIntro,
+      skipOutro: skipOutro,
       pictureInPicture: pictureInPicture,
       danmaku: danmaku,
       danmakuStyle: danmakuStyle,
