@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -166,7 +167,7 @@ class _PlayerMenuState extends State<PlayerMenu> {
     );
   }
 
-  /// 跳过片头/片尾秒数调节：− / + 每次 5 秒，0 为关闭。
+  /// 跳过片头/片尾秒数：− / + 每次 1 秒，点中间数字可直接输入，0 为关闭。
   Widget _skipRow(String title, int value, void Function(int) assign) {
     void change(int next) {
       final clamped = next.clamp(0, 300);
@@ -175,32 +176,76 @@ class _PlayerMenuState extends State<PlayerMenu> {
       _run(() => widget.onPreferences(_preferences));
     }
 
+    Future<void> edit() async {
+      final controller = TextEditingController(text: value == 0 ? '' : '$value');
+      final result = await showDialog<int>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('$title（秒）'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: const InputDecoration(
+              hintText: '0 - 300，留空或 0 为关闭',
+              suffixText: '秒',
+            ),
+            onSubmitted: (text) =>
+                Navigator.pop(context, int.tryParse(text) ?? 0),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(
+                context,
+                int.tryParse(controller.text) ?? 0,
+              ),
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      );
+      controller.dispose();
+      if (result != null) change(result);
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
           Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(fontSize: 16),
-            ),
+            child: Text(title, style: const TextStyle(fontSize: 16)),
           ),
           IconButton(
-            tooltip: '减少 5 秒',
-            onPressed: _busy || value <= 0 ? null : () => change(value - 5),
+            tooltip: '减少 1 秒',
+            onPressed: _busy || value <= 0 ? null : () => change(value - 1),
             icon: const Icon(Icons.remove_circle_outline_rounded),
           ),
-          SizedBox(
-            width: 52,
-            child: Text(
-              value == 0 ? '关' : '$value 秒',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: _busy ? null : edit,
+            child: Container(
+              width: 60,
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              alignment: Alignment.center,
+              child: Text(
+                value == 0 ? '关' : '$value 秒',
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  decoration: TextDecoration.underline,
+                  decorationStyle: TextDecorationStyle.dotted,
+                ),
+              ),
             ),
           ),
           IconButton(
-            tooltip: '增加 5 秒',
-            onPressed: _busy || value >= 300 ? null : () => change(value + 5),
+            tooltip: '增加 1 秒',
+            onPressed: _busy || value >= 300 ? null : () => change(value + 1),
             icon: const Icon(Icons.add_circle_outline_rounded),
           ),
         ],
