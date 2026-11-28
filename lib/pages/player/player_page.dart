@@ -582,18 +582,21 @@ class _PlayerScreenState extends State<PlayerScreen>
         _maybeSkipOutro(position);
       }),
     );
-    for (final stream in [
-      _player.stream.duration,
-      _player.stream.buffer,
-      _player.stream.playing,
-      _player.stream.buffering,
-      _player.stream.rate,
-      _player.stream.completed,
+    // buffer / buffering 更新很频繁，锁屏信息只做节流刷新，避免主线程被原生调用拖卡
+    for (final entry in <(Stream<dynamic>, bool)>[
+      (_player.stream.duration, true),
+      (_player.stream.buffer, false),
+      (_player.stream.playing, true),
+      (_player.stream.buffering, false),
+      (_player.stream.rate, true),
+      (_player.stream.completed, true),
     ]) {
+      final stream = entry.$1;
+      final immediate = entry.$2;
       _subscriptions.add(
         stream.listen((_) {
           _syncKeepAlive();
-          _publishNowPlaying();
+          _publishNowPlaying(force: immediate);
           _syncDanmaku();
           _syncPreload();
           _acknowledgeHandoff();
@@ -1671,8 +1674,16 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   bool _nowPlayingLogged = false;
 
-  void _publishNowPlaying() {
+  DateTime _nowPlayingAt = DateTime(2000);
+
+  void _publishNowPlaying({bool force = true}) {
     if (_closed || widget.feed || _openedIndex != _index) return;
+    if (defaultTargetPlatform != TargetPlatform.iOS) return;
+    final now = DateTime.now();
+    if (!force && now.difference(_nowPlayingAt) < const Duration(seconds: 2)) {
+      return;
+    }
+    _nowPlayingAt = now;
     if (!_nowPlayingLogged) {
       _nowPlayingLogged = true;
       DiaryService.add('[锁屏] 首次发布播放信息: 第${widget.detail.episodes[_index].number}集');
