@@ -112,7 +112,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
   bool get _copyOnly =>
       defaultTargetPlatform == TargetPlatform.iOS && _selectedAsset != null;
 
-  bool get _inAppInstall =
+  bool get _inAppInstall =>
       defaultTargetPlatform == TargetPlatform.windows &&
       _selectedAsset != null &&
       _selectedAsset!.name.toLowerCase().endsWith('.zip');
