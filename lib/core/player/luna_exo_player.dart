@@ -371,10 +371,23 @@ class LunaExoPlayer implements Player {
     mirror(native.stream.rate, stream.rateController);
     try {
       final backend = native.platform as NativePlayer;
-      if (key != null && key.isNotEmpty) {
-        await backend.setProperty('demuxer-lavf-o', 'decryption_key=$key');
+      // 网络流出现断流/卡顿时尽快重连，不再空等 20 秒（同步上游修复）
+      final isLocalMedia =
+          media.uri.startsWith('/') || media.uri.startsWith('file://');
+      final lavfOptions = <String>[
+        if (!isLocalMedia) ...[
+          'reconnect=1',
+          'reconnect_streamed=1',
+          'reconnect_on_http_error=4xx,5xx',
+          'reconnect_delay_max=2',
+          'rw_timeout=6000000',
+        ],
+        if (key != null && key.isNotEmpty) 'decryption_key=$key',
+      ];
+      if (lavfOptions.isNotEmpty) {
+        await backend.setProperty('demuxer-lavf-o', lavfOptions.join(','));
       }
-      await backend.setProperty('network-timeout', '20');
+      await backend.setProperty('network-timeout', '8');
       if (_audioOnly) {
         await backend.setProperty('vid', 'no');
       }
