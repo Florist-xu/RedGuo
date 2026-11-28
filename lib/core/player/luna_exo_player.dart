@@ -148,6 +148,9 @@ class LunaExoPlayer implements Player {
   }
 
   VideoPlayerController? _controller;
+  VideoPlayerController? _standby;
+  String? _standbyUrl;
+  int _standbyGeneration = 0;
   final Duration initializationTimeout;
   VoidCallback? _valueListener;
   Timer? _positionPollTimer;
@@ -177,6 +180,8 @@ class LunaExoPlayer implements Player {
   String? _controllerError;
   Player? _streamPlayer;
   kit.VideoController? _streamVideo;
+  bool _audioOnly = false;
+  bool get audioOnly => _audioOnly;
   final List<StreamSubscription<dynamic>> _streamSubscriptions = [];
 
   final ValueNotifier<int> revision = ValueNotifier<int>(0);
@@ -215,6 +220,27 @@ class LunaExoPlayer implements Player {
     return (await _controller?.getAudioTracks())?.length ?? 0;
   }
 
+  /// 纯音频模式：只解码并输出声音，不创建任何视频输出（用于分屏时手机只出声）。
+  /// 锁屏或切后台时，系统对「纯音频」播放不会像视频那样打断。
+  Future<void> setAudioOnly(bool value) async {
+    if (_audioOnly == value || _disposed) return;
+    _audioOnly = value;
+    final media = _currentMedia;
+    if (media == null) return;
+    final wasPlaying = state.playing;
+    final position = state.position;
+    DiaryService.add(
+      '[ExoPlayer] 切换为${value ? "纯音频" : "视频"}播放: 位置=${position.inSeconds}s 播放中=$wasPlaying',
+    );
+    final resume = Media(
+      media.uri,
+      httpHeaders: media.httpHeaders,
+      start: position > Duration.zero ? position : null,
+      extras: media.extras,
+    );
+    await open(resume, play: wasPlaying);
+  }
+
   Future<void> _openWithMediaKit(
     Media media, {
     String? key,
@@ -239,13 +265,15 @@ class LunaExoPlayer implements Player {
       ),
     );
     _streamPlayer = native;
-    _streamVideo = kit.VideoController(
-      native,
-      configuration: kit.VideoControllerConfiguration(
-        enableHardwareAcceleration: hwdec,
-        hwdec: hwdec ? (Platform.isAndroid ? null : 'auto-safe') : 'no',
-      ),
-    );
+    _streamVideo = _audioOnly
+        ? null
+        : kit.VideoController(
+            native,
+            configuration: kit.VideoControllerConfiguration(
+              enableHardwareAcceleration: hwdec,
+              hwdec: hwdec ? (Platform.isAndroid ? null : 'auto-safe') : 'no',
+            ),
+          );
     WidgetsBinding.instance.scheduleFrame();
     void mirror<T>(
       Stream<T> input,
@@ -343,10 +371,26 @@ class LunaExoPlayer implements Player {
     mirror(native.stream.rate, stream.rateController);
     try {
       final backend = native.platform as NativePlayer;
-      if (key != null && key.isNotEmpty) {
-        await backend.setProperty('demuxer-lavf-o', 'decryption_key=$key');
+      // 网络流出现断流/卡顿时尽快重连，不再空等 20 秒（同步上游修复）
+      final isLocalMedia =
+          media.uri.startsWith('/') || media.uri.startsWith('file://');
+      final lavfOptions = <String>[
+        if (!isLocalMedia) ...[
+          'reconnect=1',
+          'reconnect_streamed=1',
+          'reconnect_on_http_error=4xx,5xx',
+          'reconnect_delay_max=2',
+          'rw_timeout=6000000',
+        ],
+        if (key != null && key.isNotEmpty) 'decryption_key=$key',
+      ];
+      if (lavfOptions.isNotEmpty) {
+        await backend.setProperty('demuxer-lavf-o', lavfOptions.join(','));
       }
-      await backend.setProperty('network-timeout', '20');
+      await backend.setProperty('network-timeout', '8');
+      if (_audioOnly) {
+        await backend.setProperty('vid', 'no');
+      }
       if (Platform.isAndroid) {
         if (hwdec) {
           await backend.setProperty('hwdec', 'mediacodec');
@@ -384,6 +428,83 @@ class LunaExoPlayer implements Player {
     }
   }
 
+  /// iOS：播放当前集时，提前为下一集建好并初始化好原生控制器（不播放、不出声）。
+  /// 换集时 [open] 发现地址一致就直接接管，省掉新建与初始化的等待。
+  Future<bool> warmUp(Media media) async {
+    if (_disposed || !Platform.isIOS || _audioOnly) return false;
+    if (_decoderMode == PlaybackDecoderMode.compatible) return false;
+    if ((media.extras?['decryptionKey']?.toString() ?? '').isNotEmpty) {
+      return false;
+    }
+    final url = media.uri;
+    final uri = Uri.tryParse(url);
+    if (uri == null || url.isEmpty) return false;
+    final isFile = url.startsWith('/') || uri.scheme == 'file';
+    final isLoopback =
+        (uri.host == '127.0.0.1' || uri.host == 'localhost') &&
+        uri.path.endsWith('.mp4');
+    if (!isFile && !isLoopback) return false;
+    if (_standby != null && _standbyUrl == url) return true;
+    await discardStandby();
+    final gen = ++_standbyGeneration;
+    final options = VideoPlayerOptions(
+      mixWithOthers: true,
+      allowBackgroundPlayback: true,
+    );
+    final VideoPlayerController c = isFile
+        ? _LunaVideoPlayerController.file(
+            File(uri.scheme == 'file' ? uri.toFilePath() : url),
+            videoPlayerOptions: options,
+          )
+        : _LunaVideoPlayerController.networkUrl(
+            uri,
+            httpHeaders: <String, String>{
+              if (media.httpHeaders != null) ...media.httpHeaders!,
+            },
+            videoPlayerOptions: options,
+          );
+    try {
+      await c.initialize().timeout(initializationTimeout);
+    } catch (e) {
+      DiaryService.add('[ExoPlayer] 下一集预热失败（忽略）: $e');
+      try {
+        await c.dispose();
+      } catch (_) {}
+      return false;
+    }
+    if (_disposed || gen != _standbyGeneration) {
+      try {
+        await c.dispose();
+      } catch (_) {}
+      return false;
+    }
+    _standby = c;
+    _standbyUrl = url;
+    DiaryService.add('[ExoPlayer] 下一集已预热（控制器已初始化）');
+    return true;
+  }
+
+  Future<void> discardStandby() async {
+    _standbyGeneration++;
+    final c = _standby;
+    _standby = null;
+    _standbyUrl = null;
+    if (c != null) {
+      try {
+        await c.dispose();
+      } catch (_) {}
+    }
+  }
+
+  VideoPlayerController? _takeStandby(String url) {
+    final c = _standby;
+    if (c == null || _standbyUrl != url) return null;
+    _standby = null;
+    _standbyUrl = null;
+    _standbyGeneration++;
+    return c;
+  }
+
   @override
   Future<void> open(Playable playable, {bool play = true}) async {
     if (_disposed) return;
@@ -396,6 +517,15 @@ class LunaExoPlayer implements Player {
     _currentMedia = media;
     _currentPlay = play;
     final key = media.extras?['decryptionKey']?.toString() ?? '';
+    if (_audioOnly) {
+      DiaryService.add('[ExoPlayer] 纯音频模式起播（不创建视频输出）');
+      return _openWithMediaKit(
+        media,
+        key: key.isEmpty ? null : key,
+        play: play,
+        hwdec: false,
+      );
+    }
     if (key.isNotEmpty) {
       return _openWithMediaKit(
         media,
@@ -419,8 +549,10 @@ class LunaExoPlayer implements Player {
     // 关键核心：在 Android TV 上，MediaCodec 硬件视频解码器通常仅支持单实例并发。
     // 切换集数或换源时，必须严格执行串行释放：立即卸载旧控制器并彻底 dispose，
     // 防止新旧两个 ExoPlayer 实例在底层同时竞争同一个硬件解码器导致底层崩溃或静默黑屏。
+    // 已预热的下一集控制器：先接管，再回收旧的，中间不出现空白画面。
+    final standbyController = _takeStandby(url);
     final old = _controller;
-    _controller = null;
+    _controller = standbyController;
     if (old != null) {
       if (_valueListener != null) {
         try {
@@ -436,7 +568,9 @@ class LunaExoPlayer implements Player {
       } catch (_) {}
       // 在 Android 电视端/低运存设备，底层 MediaCodec release 具有短暂的驱动回收延迟
       // 让出充足等待周期，彻底释放硬件解码器句柄与 Surface
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (Platform.isAndroid) {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+      }
     }
 
     if (_disposed || myGen != _openGeneration) return;
@@ -526,25 +660,34 @@ class LunaExoPlayer implements Player {
     );
 
     VideoPlayerController c;
-    if (url.startsWith('/') || (uri != null && uri.scheme == 'file')) {
+    if (standbyController != null) {
+      c = standbyController;
+      DiaryService.add('[ExoPlayer] 接管已预热的下一集控制器，跳过初始化');
+    } else if (url.startsWith('/') || (uri != null && uri.scheme == 'file')) {
       final filePath = uri != null && uri.scheme == 'file'
           ? uri.toFilePath()
           : url;
       DiaryService.add('[ExoPlayer] 本地缓存播放');
       c = _LunaVideoPlayerController.file(
         File(filePath),
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
       );
     } else {
       c = _LunaVideoPlayerController.networkUrl(
         uri!,
         formatHint: formatHint,
         httpHeaders: headers,
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
       );
     }
 
-    try {
+    if (standbyController == null) try {
       DiaryService.add(
         '[ExoPlayer] c.initialize() 开始 (formatHint=$formatHint)...',
       );
@@ -576,7 +719,10 @@ class LunaExoPlayer implements Player {
           uri,
           formatHint: alternateFormat,
           httpHeaders: retryHeaders,
-          videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+          videoPlayerOptions: VideoPlayerOptions(
+            mixWithOthers: true,
+            allowBackgroundPlayback: true,
+          ),
         );
         try {
           await c.initialize().timeout(initializationTimeout);
@@ -1014,6 +1160,9 @@ class LunaExoPlayer implements Player {
 
   @override
   Future<void> pause() async {
+    DiaryService.add(
+      '[ExoPlayer] pause() 被调用 <- ${StackTrace.current.toString().split('\n').skip(1).take(5).map((l) => l.trim()).join(' <- ')}',
+    );
     if (_streamPlayer != null) return _streamPlayer!.pause();
     final c = _controller;
     if (c == null) return;
@@ -1149,6 +1298,7 @@ class LunaExoPlayer implements Player {
 
   Future<void> _disposePlayer() async {
     _disposed = true;
+    await discardStandby();
     await stop();
     stream.dispose();
   }
@@ -1229,12 +1379,23 @@ class LunaExoVideoView extends StatelessWidget {
                 controls: kit.NoVideoControls,
               )
             else if (hasVideo)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: ratio,
-                  child: VideoPlayer(key: ObjectKey(c), c),
-                ),
-              )
+              fit == BoxFit.cover
+                  ? ClipRect(
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          width: ratio * 1000,
+                          height: 1000,
+                          child: VideoPlayer(key: ObjectKey(c), c),
+                        ),
+                      ),
+                    )
+                  : Center(
+                      child: AspectRatio(
+                        aspectRatio: ratio,
+                        child: VideoPlayer(key: ObjectKey(c), c),
+                      ),
+                    )
             else
               const ColoredBox(color: AppColors.black),
             if (controls != null) controls!(context),

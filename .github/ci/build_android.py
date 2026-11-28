@@ -8,7 +8,7 @@ from pathlib import Path
 
 from prepare_official_source import prepared_official_source
 from build_mirrors import china_mirror_environment, mirrored_pub_lockfile
-from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number
+from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number, build_name
 
 root = Path(__file__).resolve().parents[2]
 
@@ -36,11 +36,11 @@ def main():
         china_mirror_environment(environment, options.cn_mirrors) as env,
         mirrored_pub_lockfile(root, env),
     ):
-        sync_project_version(root, "1.0.0")
+        sync_project_version(root)
         if options.cn_mirrors:
             print('本次构建启用国内依赖镜像，保留官方 Maven 仓库备用。', flush=True)
         subprocess.run([flutter, 'pub', 'get'], cwd=root, env=env, check=True)
-        build_args = [flutter, 'build', 'apk', '--release', '--split-per-abi', '--no-pub', '--build-name=1.0.0', f'--build-number={beijing_build}', *variant.flutter_arguments]
+        build_args = [flutter, 'build', 'apk', '--release', '--split-per-abi', '--no-pub', f'--build-name={build_name()}', f'--build-number={beijing_build}', *variant.flutter_arguments]
         if options.abi:
             targets = {'arm64-v8a': 'android-arm64', 'armeabi-v7a': 'android-arm', 'x86_64': 'android-x64'}
             build_args += ['--target-platform', ','.join(targets[abi] for abi in options.abi)]

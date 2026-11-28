@@ -1,0 +1,62 @@
+name: Sync Official Source
+
+# 每 6 小时检查一次上游官方 hongguo.js；有变化时开分支并创建 PR，不会直接改主分支。
+# 注意：定时任务只会在默认分支上运行，需先把本文件合并进默认分支才会生效。
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_URL: https://github.com/never88gone/THLRedGuo/releases/download/official-source/hongguo.js
+
+jobs:
+  sync:
+    name: 检查并同步官方 JS 数据源
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载并校验上游数据源
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/upstream"
+          curl -fsSL --retry 3 "$UPSTREAM_URL" -o "$RUNNER_TEMP/upstream/hongguo.js"
+          python3 - <<'PY'
+          import os, re, sys
+          data = open(os.environ['RUNNER_TEMP'] + '/upstream/hongguo.js', 'rb').read()
+          head = data[:2000]
+          if len(data) < 100000 or not re.search(rb'id:\s*"hongguo"', head):
+              sys.exit('上游数据源内容异常，已中止')
+          m = re.search(rb'const builtInConfiguration=\{id:"([^"\r\n]*)",material:"([^"\r\n]*)"\};', data)
+          if not m or b'__THL_' in m.group(0):
+              sys.exit('上游数据源缺少有效签名配置，已中止')
+          v = re.search(rb'version:\s*"([^"]+)"', head)
+          print('upstream version:', v.group(1).decode() if v else '?', 'bytes:', len(data))
+          PY
+      - name: 有变化则创建分支与 PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if cmp -s "$RUNNER_TEMP/upstream/hongguo.js" assets/sources/hongguo.js; then
+            echo "数据源无变化"
+            exit 0
+          fi
+          version=$(grep -m1 -oE 'version: "[^"]+"' "$RUNNER_TEMP/upstream/hongguo.js" | cut -d'"' -f2 || true)
+          branch="auto/official-source"
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git checkout -B "$branch"
+          cp "$RUNNER_TEMP/upstream/hongguo.js" assets/sources/hongguo.js
+          git add assets/sources/hongguo.js
+          git commit -m "chore(source): 同步上游官方 hongguo.js ${version}"
+          git push -f origin "$branch"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "同步官方数据源 ${version}" \
+            --body "自动检测到上游 hongguo.js 更新（${version}）。合并前请先确认构建与播放正常。" \
+            || echo "PR 可能已存在，或仓库未允许 Actions 创建 PR；分支 ${branch} 已更新"

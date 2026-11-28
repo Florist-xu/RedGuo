@@ -29,6 +29,8 @@ import 'package:THLRedLook/views/common/widgets.dart';
 import 'package:THLRedLook/views/common/vip_icon.dart';
 import 'package:THLRedLook/pages/settings/settings_page.dart';
 import 'package:THLRedLook/pages/about/about_page.dart';
+import 'package:THLRedLook/core/update/app_update_service.dart';
+import 'package:THLRedLook/views/update/app_update_dialog.dart';
 import 'package:THLRedLook/pages/sources/sources_page.dart';
 import 'package:THLRedLook/views/sources/source_switcher_sheet.dart';
 import 'package:THLRedLook/pages/downloads/batch_download_page.dart';
@@ -62,6 +64,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  static bool _startupUpdateChecked = false;
   late final _feed = VideoFeedController(widget.repository, widget.store);
   static const _recommendationCategory = 'app:recommendations';
   final _search = TextEditingController();
@@ -422,6 +425,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _accountRevision = HongguoAccountSession.shared.revision;
     HongguoAccountSession.shared.addListener(_officialAccountChanged);
+    if (!_startupUpdateChecked && AppUpdateService.isSupportedPlatform) {
+      _startupUpdateChecked = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await Future<void>.delayed(const Duration(seconds: 3));
+        if (mounted) unawaited(triggerCheckUpdate(context, silentIfNoUpdate: true));
+      });
+    }
     _scroll.addListener(_onCatalogScroll);
     _source = SourceSite.byId(widget.store.source);
     _allSources = widget.store.catalogView.allSources;
@@ -1227,7 +1237,6 @@ class _HomeScreenState extends State<HomeScreen> {
           (0, Icons.explore_outlined, Icons.explore, '发现'),
           (4, Icons.play_circle_outline, Icons.play_circle, '推荐'),
           (1, Icons.person_outline, Icons.person, '我的'),
-          (3, Icons.download_outlined, Icons.download_rounded, '下载'),
           (5, Icons.settings_outlined, Icons.settings_rounded, '设置'),
         ];
         final navIndex = destinations.indexWhere((item) => item.$1 == _tab);
@@ -1339,7 +1348,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ? AccountScreen(
                                     repository: widget.repository,
                                     store: widget.store,
-                                    initialHistory: widget.initialTab == 2,
+                                    initialHistory: true,
                                     onOpen: _openDrama,
                                     onOpenSettings: () => _changeTab(5),
                                     localLibraryBuilder: (history) =>

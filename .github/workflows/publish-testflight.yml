@@ -145,4 +145,4 @@ jobs:
           name: testflight-public-release
           path: testflight-public-release.json
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 2

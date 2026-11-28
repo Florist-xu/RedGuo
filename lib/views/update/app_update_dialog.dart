@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:THLRedLook/core/update/app_update_service.dart';
+import 'package:THLRedLook/core/update/windows_update_installer.dart';
 import 'package:THLRedLook/utils/theme/app_colors.dart';
 
 /// 弹出更新对话框
@@ -24,7 +27,7 @@ Future<void> triggerCheckUpdate(
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('iOS 与 tvOS 端通过 TestFlight 自动更新'),
+          content: Text('当前平台暂不支持检查更新'),
           behavior: SnackBarBehavior.floating,
           duration: Duration(seconds: 2),
         ),
@@ -100,6 +103,48 @@ class AppUpdateDialog extends StatefulWidget {
 class _AppUpdateDialogState extends State<AppUpdateDialog> {
   late UpdateAsset? _selectedAsset;
   bool _showOtherAssets = false;
+  bool _installing = false;
+  double? _progress;
+  String _stage = '';
+  String? _installError;
+
+  /// iOS 侧载：只提供可复制的下载地址，由侧载工具读取后安装。
+  bool get _copyOnly =>
+      defaultTargetPlatform == TargetPlatform.iOS && _selectedAsset != null;
+
+  bool get _inAppInstall =>
+      defaultTargetPlatform == TargetPlatform.windows &&
+      _selectedAsset != null &&
+      _selectedAsset!.name.toLowerCase().endsWith('.zip');
+
+  Future<void> _install() async {
+    final asset = _selectedAsset;
+    if (asset == null) return;
+    setState(() {
+      _installing = true;
+      _installError = null;
+      _progress = 0;
+      _stage = '准备下载…';
+    });
+    try {
+      await WindowsUpdateInstaller.downloadAndInstall(
+        asset,
+        onProgress: (progress, stage) {
+          if (!mounted) return;
+          setState(() {
+            _progress = progress;
+            _stage = stage;
+          });
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _installing = false;
+        _installError = '更新失败：$error';
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -245,6 +290,13 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
                           ],
                         ],
                       ),
+                      if (defaultTargetPlatform == TargetPlatform.iOS) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          _selectedAsset!.downloadUrl,
+                          style: const TextStyle(fontSize: 11, height: 1.4),
+                        ),
+                      ],
                       if (_selectedAsset!.description.isNotEmpty) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -371,13 +423,39 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
         ),
       ),
       actions: [
+        if (_installing)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(value: _progress),
+                const SizedBox(height: 6),
+                Text(_stage, style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+          )
+        else ...[
+        if (_installError != null)
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Text(
+              _installError!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+            ),
+          ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('稍后再说'),
         ),
         FilledButton.icon(
           icon: const Icon(Icons.file_download_rounded, size: 18),
-          label: Text(_selectedAsset != null ? '立即下载' : '前往下载'),
+          label: Text(
+            _inAppInstall
+                ? '下载并安装'
+                : (_copyOnly ? '复制下载地址' : (_selectedAsset != null ? '立即下载' : '前往下载')),
+          ),
           style: FilledButton.styleFrom(
             backgroundColor: AppColors.hongguoRed,
             foregroundColor: AppColors.white,
@@ -386,6 +464,23 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
             ),
           ),
           onPressed: () {
+            if (_inAppInstall) {
+              unawaited(_install());
+              return;
+            }
+            if (_copyOnly) {
+              final url = _selectedAsset!.downloadUrl;
+              unawaited(Clipboard.setData(ClipboardData(text: url)));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('下载地址已复制，到侧载工具里粘贴即可'),
+                  behavior: SnackBarBehavior.floating,
+                  duration: Duration(seconds: 3),
+                ),
+              );
+              Navigator.of(context).pop();
+              return;
+            }
             final targetUrl = _selectedAsset?.downloadUrl ?? info.htmlUrl;
             AppUpdateService.openDownloadUrl(
               context,
@@ -395,6 +490,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
             Navigator.of(context).pop();
           },
         ),
+        ],
       ],
     );
   }

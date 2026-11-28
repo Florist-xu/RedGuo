@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>糖葫芦Haw</string>
+	<string>Florist-TV</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -42,7 +42,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>用于扫描糖葫芦 Haw 设备登录配对码和设备互联二维码。</string>
+	<string>用于扫描Florist-TV 设备登录配对码和设备互联二维码。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>用于读取或保存短剧剧照、封面海报以及导出本地缓存视频。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 
 import 'package:THLRedLook/utils/theme/app_colors.dart';
 import 'package:THLRedLook/core/bridge/core_bridge.dart';
-import 'package:THLRedLook/views/download/download_picker.dart';
 import 'package:THLRedLook/core/store/follow_state.dart';
 import 'package:THLRedLook/core/series/hongguo_series.dart';
 import 'package:THLRedLook/core/store/local_store.dart';
@@ -20,7 +19,6 @@ class PlayerMobilePanelView extends StatefulWidget {
     required this.store,
     required this.repository,
     required this.onSelectEpisode,
-    this.onSubmitDownload,
     this.seriesEntries = const [],
     this.onSeasonSelected,
   });
@@ -30,7 +28,6 @@ class PlayerMobilePanelView extends StatefulWidget {
   final LocalStore store;
   final AppRepository repository;
   final ValueChanged<int> onSelectEpisode;
-  final Future<void> Function(DownloadSelection selection)? onSubmitDownload;
   final List<HongguoSeriesEntry> seriesEntries;
   final ValueChanged<Drama>? onSeasonSelected;
 
@@ -61,7 +58,7 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                           ? AppColors.textPrimaryDark
                           : AppColors.textPrimaryLight)
                     : colorScheme.onSurfaceVariant,
-                fontSize: 13.5,
+                fontSize: 14.5,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
               ),
             ),
@@ -241,83 +238,57 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
     );
   }
 
-  Widget _downloadTab() {
-    final colors = Theme.of(context).colorScheme;
-    if (!widget.repository.supportsDownloads || !widget.store.canDownload) {
-      return ColoredBox(
-        color: colors.surface,
-        child: const Center(child: Text('当前环境或权限暂未开放本地下载')),
-      );
-    }
-    return DownloadPicker(
-      detail: widget.detail,
-      preferences: widget.store.downloadPreferences,
-      embedded: true,
-      onSubmit: widget.onSubmitDownload,
+  Widget _headerRow() {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final drama = widget.detail.drama;
+    final episodes = widget.detail.episodes;
+    final current = episodes.isEmpty
+        ? 1
+        : episodes[widget.currentIndex.clamp(0, episodes.length - 1)].number;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  drama.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '第 $current 集 · 共 ${episodes.length} 集',
+                  style: TextStyle(
+                    color: colors.onSurfaceVariant,
+                    fontSize: 12.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          _mobileFollowControl(drama),
+        ],
+      ),
     );
   }
 
   Widget _buildSeriesBar() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final currentId = widget.detail.drama.id;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-      decoration: BoxDecoration(
-        color: isDark ? AppColors.darkSurfaceHigh : AppColors.lightSurfaceHigh,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.layers_rounded,
-                size: 14,
-                color: AppColors.hongguoRed,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                '系列多季',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: isDark
-                      ? AppColors.textPrimaryDark
-                      : AppColors.textPrimaryLight,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  color: AppColors.accentTrack35,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '共 ${widget.seriesEntries.length} 季',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.hongguoRed,
-                  ),
-                ),
-              ),
-              const Spacer(),
-              Text(
-                '点击快速切季',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  color: isDark
-                      ? AppColors.textTertiaryDark
-                      : AppColors.textTertiaryLight,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
@@ -327,7 +298,7 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                     builder: (_) {
                       final isCurrent = entry.drama.id == currentId;
                       return Padding(
-                        padding: const EdgeInsets.only(right: 6),
+                        padding: const EdgeInsets.only(right: 8),
                         child: InkWell(
                           key: ValueKey('player-season-${entry.drama.id}'),
                           onTap: isCurrent || !entry.playable
@@ -336,9 +307,11 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                                     widget.onSeasonSelected?.call(entry.drama),
                           borderRadius: BorderRadius.circular(8),
                           child: Container(
+                            constraints: const BoxConstraints(minHeight: 30),
+                            alignment: Alignment.center,
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 5,
+                              horizontal: 12,
+                              vertical: 4,
                             ),
                             decoration: BoxDecoration(
                               color: isCurrent
@@ -369,7 +342,7 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                                 Text(
                                   entry.label,
                                   style: TextStyle(
-                                    fontSize: 11.5,
+                                    fontSize: 13,
                                     fontWeight: isCurrent
                                         ? FontWeight.bold
                                         : FontWeight.normal,
@@ -407,24 +380,26 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
         top: false,
         child: Column(
           children: [
+            _headerRow(),
             Padding(
-              padding: const EdgeInsets.fromLTRB(8, 2, 8, 0),
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 0),
               child: SizedBox(
-                height: 42,
+                height: 44,
                 child: Row(
                   children: [
                     _tabButton(0, '选集'),
                     _tabButton(1, '简介'),
-                    _tabButton(2, '下载'),
                   ],
                 ),
               ),
             ),
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                padding: const EdgeInsets.fromLTRB(0, 4, 0, 0),
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(16),
+                  ),
                   child: _currentTab == 0
                       ? ColoredBox(
                           color: colors.surface,
@@ -445,9 +420,7 @@ class _PlayerMobilePanelViewState extends State<PlayerMobilePanelView> {
                             ],
                           ),
                         )
-                      : _currentTab == 1
-                      ? _synopsisTab()
-                      : _downloadTab(),
+                      : _synopsisTab(),
                 ),
               ),
             ),

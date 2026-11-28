@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number
+from app_build import BuildVariant, add_variant_argument, sync_project_version, get_beijing_build_number, build_name
 
 from prepare_official_source import prepared_official_source
 from source_manifest import verify_flutter_directory
@@ -82,7 +82,7 @@ def sign_and_prepare_app(app_path: Path):
     print(f"macOS 应用主体全量深层签名成功: {app_path}")
 
 
-def create_dmg(app_path: Path, dmg_target: Path, volume_name: str = "糖葫芦Haw"):
+def create_dmg(app_path: Path, dmg_target: Path, volume_name: str = "Florist-TV"):
     """使用 macOS 原生 hdiutil 命令生成标准的拖拽安装 DMG 镜像包"""
     if dmg_target.exists():
         dmg_target.unlink()
@@ -136,7 +136,7 @@ def main():
     if platform.system() != "Darwin":
         raise SystemExit("macOS 构建仅支持 macOS 系统。")
 
-    parser = argparse.ArgumentParser(description="糖葫芦Haw macOS 自动化构建与打包脚本")
+    parser = argparse.ArgumentParser(description="Florist-TV macOS 自动化构建与打包脚本")
     parser.add_argument("--clean", action="store_true", help="构建前清理产物")
     parser.add_argument("--export-options", type=Path, help="使用指定的 ExportOptions.plist 归档")
     add_variant_argument(parser)
@@ -149,7 +149,7 @@ def main():
         raise SystemExit("请先确保 Flutter 与 Xcode 命令行工具已正确安装并加入 PATH。")
 
     with prepared_official_source(root):
-        sync_project_version(root, "1.0.0")
+        sync_project_version(root)
         build(options, variant, flutter, xcodebuild)
 
 
@@ -224,7 +224,7 @@ def build(options, variant, flutter, xcodebuild):
             create_dmg(target_app, dmg_target)
             artifacts.append(dmg_target)
         else:
-            run([flutter, "build", "macos", "--release", "--no-pub", "--build-name=1.0.0", f"--build-number={beijing_build}", *variant.flutter_arguments])
+            run([flutter, "build", "macos", "--release", "--no-pub", f"--build-name={build_name()}", f"--build-number={beijing_build}", *variant.flutter_arguments])
             app_path = root / "build" / "macos" / "Build" / "Products" / "Release" / "THLRedLook.app"
             if not app_path.exists():
                 candidates = list((root / "build" / "macos" / "Build" / "Products" / "Release").glob("*.app"))

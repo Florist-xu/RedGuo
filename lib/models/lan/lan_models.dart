@@ -133,12 +133,16 @@ class LanPlaybackIntent {
     required this.episode,
     required this.position,
     this.playing = true,
+    this.cast = false,
+    this.castAudio = false,
   });
   final Drama drama;
   final String episodeID;
   final int episode;
   final double position;
   final bool playing;
+  final bool cast;
+  final bool castAudio;
 
   factory LanPlaybackIntent.fromJson(Object? value) {
     final row = lanMap(value);
@@ -162,8 +166,20 @@ class LanPlaybackIntent {
       episode: episode,
       position: position.toDouble(),
       playing: row['playing'] as bool,
+      cast: row['cast'] == true,
+      castAudio: row['castAudio'] == true,
     );
   }
+
+  LanPlaybackIntent asCast({bool audio = false}) => LanPlaybackIntent(
+    drama: drama,
+    episodeID: episodeID,
+    episode: episode,
+    position: position,
+    playing: playing,
+    cast: true,
+    castAudio: audio,
+  );
 
   Map<String, dynamic> toJson() => {
     'drama': lanCompactDrama(drama).toJson(),
@@ -171,6 +187,8 @@ class LanPlaybackIntent {
     'episode': episode,
     'position': position,
     'playing': playing,
+    if (cast) 'cast': true,
+    if (castAudio) 'castAudio': true,
   };
   String get identity => lanHash([drama.id, episodeID, episode]);
 }
@@ -207,6 +225,26 @@ class LanIncomingPlayback {
       started.complete({'state': 'playing', 'position': position});
     }
   }
+}
+
+class LanCastState {
+  const LanCastState({
+    required this.episode,
+    required this.position,
+    required this.playing,
+    required this.rate,
+  });
+  final int episode;
+  final double position;
+  final bool playing;
+  final double rate;
+}
+
+class LanCastReceiver {
+  LanCastReceiver({required this.apply, required this.stop});
+  final Map<String, dynamic> Function(Map<String, dynamic> body, int recvAtMs)
+  apply;
+  final Future<void> Function() stop;
 }
 
 class LanPlaybackHost {
