@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:THLRedLook/core/update/app_update_service.dart';
 import 'package:THLRedLook/core/update/windows_update_installer.dart';
@@ -107,7 +108,11 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
   String _stage = '';
   String? _installError;
 
-  bool get _inAppInstall =>
+  /// iOS 侧载：只提供可复制的下载地址，由侧载工具读取后安装。
+  bool get _copyOnly =>
+      defaultTargetPlatform == TargetPlatform.iOS && _selectedAsset != null;
+
+  bool get _inAppInstall =
       defaultTargetPlatform == TargetPlatform.windows &&
       _selectedAsset != null &&
       _selectedAsset!.name.toLowerCase().endsWith('.zip');
@@ -285,6 +290,13 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
                           ],
                         ],
                       ),
+                      if (defaultTargetPlatform == TargetPlatform.iOS) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          _selectedAsset!.downloadUrl,
+                          style: const TextStyle(fontSize: 11, height: 1.4),
+                        ),
+                      ],
                       if (_selectedAsset!.description.isNotEmpty) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -442,7 +454,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
           label: Text(
             _inAppInstall
                 ? '下载并安装'
-                : (_selectedAsset != null ? '立即下载' : '前往下载'),
+                : (_copyOnly ? '复制下载地址' : (_selectedAsset != null ? '立即下载' : '前往下载')),
           ),
           style: FilledButton.styleFrom(
             backgroundColor: AppColors.hongguoRed,
@@ -454,6 +466,19 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
           onPressed: () {
             if (_inAppInstall) {
               unawaited(_install());
+              return;
+            }
+            if (_copyOnly) {
+              final url = _selectedAsset!.downloadUrl;
+              unawaited(Clipboard.setData(ClipboardData(text: url)));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('下载地址已复制，到侧载工具里粘贴即可'),
+                  behavior: SnackBarBehavior.floating,
+                  duration: Duration(seconds: 3),
+                ),
+              );
+              Navigator.of(context).pop();
               return;
             }
             final targetUrl = _selectedAsset?.downloadUrl ?? info.htmlUrl;
