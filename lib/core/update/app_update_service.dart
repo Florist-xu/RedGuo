@@ -84,16 +84,17 @@ class AppUpdateService {
   AppUpdateService._();
   static final AppUpdateService instance = AppUpdateService._();
 
-  static const String repoOwner = 'never88gone';
-  static const String repoName = 'THLRedGuo';
+  static const String repoOwner = 'Florist-xu';
+  static const String repoName = 'RedGuo';
   static const String githubReleasesApi =
-      'https://api.github.com/repos/$repoOwner/$repoName/releases/latest';
+      'https://api.github.com/repos/$repoOwner/$repoName/releases/tags/nightly';
 
   /// 判断当前平台是否支持客户端内独立检查更新
   /// iOS 与 Apple tvOS 统一通过 TestFlight 分发与自动更新，不在此进行更新检测
   static bool get isSupportedPlatform {
     if (kIsWeb) return false;
     return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS ||
         defaultTargetPlatform == TargetPlatform.windows ||
         defaultTargetPlatform == TargetPlatform.macOS ||
         defaultTargetPlatform == TargetPlatform.linux;
@@ -176,10 +177,10 @@ class AppUpdateService {
       publishedAt = DateTime.tryParse(json['published_at'] as String);
     }
 
-    final remoteVersion = cleanVersion(tagName);
-    final remoteBuild = extractBuildNumber(title, tagName, body);
+    var remoteVersion = cleanVersion(tagName);
+    var remoteBuild = extractBuildNumber(title, tagName, body);
 
-    final bool hasUpdate = isNewerVersion(
+    var hasUpdate = isNewerVersion(
       currentVersion: currentVersion,
       currentBuild: currentBuild,
       remoteVersion: remoteVersion,
@@ -208,6 +209,32 @@ class AppUpdateService {
             description: description,
           ),
         );
+      }
+    }
+
+    // 预发布(nightly)的 tag 固定为 nightly，版本号只能从安装包文件名取：
+    // THLRedLook-1.0.61+263322123-windows-x64.zip
+    if (platformAssets.isNotEmpty) {
+      final m = RegExp(r'-(\d+)\.(\d+)\.(\d+)\+(\d+)')
+          .firstMatch(platformAssets.first.name);
+      if (m != null) {
+        remoteVersion = '${m.group(1)}.${m.group(2)}.${m.group(3)}';
+        remoteBuild = m.group(4)!;
+        List<int> parts(String v) =>
+            v.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+        final a = parts(remoteVersion);
+        final b = parts(currentVersion);
+        var newer = false;
+        for (var i = 0; i < 3; i++) {
+          final x = i < a.length ? a[i] : 0;
+          final y = i < b.length ? b[i] : 0;
+          if (x != y) {
+            newer = x > y;
+            break;
+          }
+        }
+        // 版本号相同视为已是最新（Windows 的构建号字段会被截断，不能拿来比较）
+        hasUpdate = newer;
       }
     }
 
@@ -253,6 +280,8 @@ class AppUpdateService {
       case TargetPlatform.macOS:
         return lower.endsWith('.dmg') ||
             (lower.contains('mac') && lower.endsWith('.zip'));
+      case TargetPlatform.iOS:
+        return lower.endsWith('.ipa') && !lower.contains('tvos');
       default:
         return false;
     }
